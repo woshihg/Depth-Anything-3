@@ -39,13 +39,18 @@ def generate_3dgs_from_images(image_folder, output_dir, model_name="depth-anythi
     # 运行推理并导出 3DGS
     # - `image_paths`: 输入图像列表。
     # - `export_dir`: 指定导出目录。
-    # - `export_format="splat-glb"`:
-    #   这是关键！它告诉模型执行 3DGS 生成，并将结果保存为一个 .glb 文件
-    #   以及一个包含高斯参数的 .ply 文件。
+
+    # prediction = model.inference(
+    #     image=image_paths,
+    #     export_dir=output_dir,
+    #     export_format="splat-glb"
+    # )
     prediction = model.inference(
         image=image_paths,
-        export_dir=output_dir,
-        export_format="splat-glb"
+        export_dir="./output",
+        export_format="npz-glb-gs_ply-gs_video",
+        align_to_input_ext_scale=True,
+        infer_gs=True,  # Required for gs_ply and gs_video exports
     )
 
     print("\nInference complete!")
@@ -69,7 +74,7 @@ if __name__ == '__main__':
     # git clone https://github.com/woshihg/Depth-Anything-3.git
     # image_folder_path = "Depth-Anything-3/assets/examples/SOH"
 
-    image_folder_path = r"/home/woshihg/PycharmProjects/ARKitScenes/data/raw/Training/40777065/vga_test"  # <--- 在这里更改为您的图像文件夹路径
+    image_folder_path = r"/home/woshihg/kicker_dslr_jpg/kicker/images/dslr_images"  # <--- 在这里更改为您的图像文件夹路径
     output_folder_path = "output/my_3dgs_scene"
 
     # 检查示例文件夹是否存在

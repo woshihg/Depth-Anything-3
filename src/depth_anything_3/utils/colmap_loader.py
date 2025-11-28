@@ -72,58 +72,29 @@ def read_images_binary(path_to_model_file):
 # ==========================================
 
 def get_intrinsic_matrix(camera):
-    """
-    将 COLMAP 的参数转换为 3x3 K 矩阵 (原始分辨率)
-    """
     params = camera.params
     K = np.eye(3)
-
     if camera.model == "SIMPLE_PINHOLE":
         f, cx, cy = params[0], params[1], params[2]
-        K[0, 0] = f
-        K[1, 1] = f
-        K[0, 2] = cx
-        K[1, 2] = cy
-
+        K[0, 0] = f; K[1, 1] = f; K[0, 2] = cx; K[1, 2] = cy
     elif camera.model == "PINHOLE":
         fx, fy, cx, cy = params[0], params[1], params[2], params[3]
-        K[0, 0] = fx
-        K[1, 1] = fy
-        K[0, 2] = cx
-        K[1, 2] = cy
-
+        K[0, 0] = fx; K[1, 1] = fy; K[0, 2] = cx; K[1, 2] = cy
     elif camera.model in ["SIMPLE_RADIAL", "RADIAL"]:
         f, cx, cy = params[0], params[1], params[2]
-        K[0, 0] = f
-        K[1, 1] = f
-        K[0, 2] = cx
-        K[1, 2] = cy
-
+        K[0, 0] = f; K[1, 1] = f; K[0, 2] = cx; K[1, 2] = cy
     elif camera.model == "OPENCV":
         fx, fy, cx, cy = params[0], params[1], params[2], params[3]
-        K[0, 0] = fx
-        K[1, 1] = fy
-        K[0, 2] = cx
-        K[1, 2] = cy
-
+        K[0, 0] = fx; K[1, 1] = fy; K[0, 2] = cx; K[1, 2] = cy
     else:
         raise NotImplementedError(f"Camera model {camera.model} conversion not implemented.")
-
     return K
 
 
 def load_colmap_data(colmap_dir, process_res=-1):
     """
     读取 COLMAP 数据并返回 (intrinsics, extrinsics)
-
-    Args:
-        colmap_dir: sparse 文件夹路径
-        process_res: 目标处理分辨率 (长边)。如果为 -1，则保持原始内参。
-
-    Returns:
-        intrinsics: (N, 3, 3) 经过缩放修正的内参
-        extrinsics: (N, 4, 4) World to Camera
-        image_names: List[str]
+    并【将第一张图片的相机位置设为世界坐标原点】
     """
     cameras_file = os.path.join(colmap_dir, "cameras.bin")
     images_file = os.path.join(colmap_dir, "images.bin")
@@ -135,7 +106,7 @@ def load_colmap_data(colmap_dir, process_res=-1):
     cameras = read_cameras_binary(cameras_file)
     images = read_images_binary(images_file)
 
-    # 按文件名排序
+    # 按文件名排序 (确保第0个总是同一张图)
     sorted_image_ids = sorted(images.keys(), key=lambda k: images[k].name)
 
     N = len(sorted_image_ids)
@@ -146,11 +117,12 @@ def load_colmap_data(colmap_dir, process_res=-1):
 
     print(f"Applying resize logic with process_res = {process_res}")
 
+    # 1. 正常读取所有数据
     for idx, img_id in enumerate(sorted_image_ids):
         img_data = images[img_id]
         cam_data = cameras[img_data.camera_id]
 
-        # 1. Extrinsics (World-to-Camera)
+        # Extrinsics (World-to-Camera)
         r = R.from_quat([img_data.qvec[1], img_data.qvec[2], img_data.qvec[3], img_data.qvec[0]])
         rot_mat = r.as_matrix()
 
@@ -158,36 +130,40 @@ def load_colmap_data(colmap_dir, process_res=-1):
         extrinsics_np[idx, :3, 3] = img_data.tvec
         extrinsics_np[idx, 3, 3] = 1.0
 
-        # 2. Intrinsics (With Scaling)
+        # Intrinsics
         K = get_intrinsic_matrix(cam_data)
-
-        # --- [关键修改] 根据分辨率计算缩放比例 ---
         if process_res > 0:
             orig_w = cam_data.width
             orig_h = cam_data.height
-
-            # 计算缩放因子：基于长边对齐
-            # 这里的逻辑是：(target_long_side / original_long_side)
             scale = process_res / max(orig_w, orig_h)
-
-            # 修正焦距 fx, fy
-            K[0, 0] *= scale
+            K[0, 0] *= scale;
             K[1, 1] *= scale
-
-            # 修正主点 cx, cy
-            K[0, 2] *= scale
+            K[0, 2] *= scale;
             K[1, 2] *= scale
-
-            # 打印第一张图的缩放信息作为调试
-            if idx == 0:
-                print(f"Debug [Image 0]: Orig ({orig_w}x{orig_h}) -> Scale {scale:.4f}")
-                print(f"Debug [Image 0]: Fx {K[0, 0] / scale:.2f} -> {K[0, 0]:.2f}")
 
         intrinsics_np[idx] = K
         image_names.append(img_data.name)
 
-    return intrinsics_np, extrinsics_np, image_names
+    # 2. 【新增逻辑】将第一张图设为参考系原点
+    if N > 0:
+        print(f"Re-centering scene. Origin set to first camera: {image_names[0]}")
 
+        # 获取第一张图的外参 (W2C)
+        first_extrinsic = extrinsics_np[0]  # Shape (4, 4)
+
+        # 计算其逆矩阵 (C2W)
+        # 这个逆矩阵代表：从 Camera 0 到 原World 的变换
+        first_pose_inv = np.linalg.inv(first_extrinsic)
+
+        # 将所有外参乘以这个逆矩阵
+        # 公式: E_new = E_old @ E_0_inv
+        # 解释: 先把点从 NewWorld(Cam0) 变回 OldWorld，再变到 TargetCamera
+        extrinsics_np = extrinsics_np @ first_pose_inv
+
+        # 验证: 第一张图的矩阵应该是单位矩阵 (Identity)
+        # print("Debug: First Extrinsic after recenter:\n", extrinsics_np[0])
+
+    return intrinsics_np.astype(np.float32), extrinsics_np.astype(np.float32), image_names
 
 # ==========================================
 # 使用示例

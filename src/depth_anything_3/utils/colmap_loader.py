@@ -5,7 +5,7 @@ import collections
 from scipy.spatial.transform import Rotation as R
 
 # ==========================================
-# 1. COLMAP 二进制文件读取工具 (内置，无需外部依赖)
+# 1. COLMAP 二进制文件读取工具 (保持不变)
 # ==========================================
 
 CameraModel = collections.namedtuple("CameraModel", ["model_id", "model_name", "num_params"])
@@ -18,7 +18,6 @@ CAMERA_MODELS = {
     2: CameraModel(2, "SIMPLE_RADIAL", 4),
     3: CameraModel(3, "RADIAL", 5),
     4: CameraModel(4, "OPENCV", 8),
-    # 其他模型暂时省略，通常这几个最常用
 }
 
 
@@ -60,9 +59,8 @@ def read_images_binary(path_to_model_file):
                 image_name += current_char.decode("utf-8")
                 current_char = read_next_bytes(fid, 1, "c")[0]
 
-            # 跳过 2D points 数据，因为这里只需要位姿
             num_points2D = read_next_bytes(fid, 8, "Q")[0]
-            fid.read(num_points2D * 24)  # x,y(16 bytes) + id(8 bytes)
+            fid.read(num_points2D * 24)
 
             images[image_id] = Image(id=image_id, qvec=qvec, tvec=tvec,
                                      camera_id=camera_id, name=image_name, xys=None, point3D_ids=None)
@@ -75,7 +73,7 @@ def read_images_binary(path_to_model_file):
 
 def get_intrinsic_matrix(camera):
     """
-    将 COLMAP 的参数转换为 3x3 K 矩阵
+    将 COLMAP 的参数转换为 3x3 K 矩阵 (原始分辨率)
     """
     params = camera.params
     K = np.eye(3)
@@ -95,8 +93,6 @@ def get_intrinsic_matrix(camera):
         K[1, 2] = cy
 
     elif camera.model in ["SIMPLE_RADIAL", "RADIAL"]:
-        # 对于带畸变的模型，如果你只需要 K 矩阵，通常取前三个参数即可 (f, cx, cy)
-        # 注意：这里忽略了畸变系数 (k1, k2...)
         f, cx, cy = params[0], params[1], params[2]
         K[0, 0] = f
         K[1, 1] = f
@@ -104,7 +100,6 @@ def get_intrinsic_matrix(camera):
         K[1, 2] = cy
 
     elif camera.model == "OPENCV":
-        # fx, fy, cx, cy, k1, k2, p1, p2
         fx, fy, cx, cy = params[0], params[1], params[2], params[3]
         K[0, 0] = fx
         K[1, 1] = fy
@@ -117,14 +112,18 @@ def get_intrinsic_matrix(camera):
     return K
 
 
-def load_colmap_data(colmap_dir):
+def load_colmap_data(colmap_dir, process_res=-1):
     """
     读取 COLMAP 数据并返回 (intrinsics, extrinsics)
 
+    Args:
+        colmap_dir: sparse 文件夹路径
+        process_res: 目标处理分辨率 (长边)。如果为 -1，则保持原始内参。
+
     Returns:
-        intrinsics: (N, 3, 3)
-        extrinsics: (N, 4, 4) - World to Camera
-        image_names: List[str] - 用于核对排序是否正确
+        intrinsics: (N, 3, 3) 经过缩放修正的内参
+        extrinsics: (N, 4, 4) World to Camera
+        image_names: List[str]
     """
     cameras_file = os.path.join(colmap_dir, "cameras.bin")
     images_file = os.path.join(colmap_dir, "images.bin")
@@ -136,9 +135,7 @@ def load_colmap_data(colmap_dir):
     cameras = read_cameras_binary(cameras_file)
     images = read_images_binary(images_file)
 
-    # *** 关键步骤 ***
-    # COLMAP 的 image_id 是乱序的，必须按照 image_name 排序
-    # 这样才能保证 N 维数组和你的图片文件列表一一对应
+    # 按文件名排序
     sorted_image_ids = sorted(images.keys(), key=lambda k: images[k].name)
 
     N = len(sorted_image_ids)
@@ -147,24 +144,46 @@ def load_colmap_data(colmap_dir):
     extrinsics_np = np.zeros((N, 4, 4), dtype=np.float32)
     image_names = []
 
+    print(f"Applying resize logic with process_res = {process_res}")
+
     for idx, img_id in enumerate(sorted_image_ids):
         img_data = images[img_id]
         cam_data = cameras[img_data.camera_id]
 
-        # 1. 处理 Extrinsics (World-to-Camera)
-        # COLMAP 存储的是 quaternion (w, x, y, z) 和 translation
-        # 公式: P_cam = R * P_world + t
-        r = R.from_quat([img_data.qvec[1], img_data.qvec[2], img_data.qvec[3], img_data.qvec[0]])  # scipy 顺序是 x,y,z,w
+        # 1. Extrinsics (World-to-Camera)
+        r = R.from_quat([img_data.qvec[1], img_data.qvec[2], img_data.qvec[3], img_data.qvec[0]])
         rot_mat = r.as_matrix()
 
         extrinsics_np[idx, :3, :3] = rot_mat
         extrinsics_np[idx, :3, 3] = img_data.tvec
         extrinsics_np[idx, 3, 3] = 1.0
 
-        # 2. 处理 Intrinsics
+        # 2. Intrinsics (With Scaling)
         K = get_intrinsic_matrix(cam_data)
-        intrinsics_np[idx] = K
 
+        # --- [关键修改] 根据分辨率计算缩放比例 ---
+        if process_res > 0:
+            orig_w = cam_data.width
+            orig_h = cam_data.height
+
+            # 计算缩放因子：基于长边对齐
+            # 这里的逻辑是：(target_long_side / original_long_side)
+            scale = process_res / max(orig_w, orig_h)
+
+            # 修正焦距 fx, fy
+            K[0, 0] *= scale
+            K[1, 1] *= scale
+
+            # 修正主点 cx, cy
+            K[0, 2] *= scale
+            K[1, 2] *= scale
+
+            # 打印第一张图的缩放信息作为调试
+            if idx == 0:
+                print(f"Debug [Image 0]: Orig ({orig_w}x{orig_h}) -> Scale {scale:.4f}")
+                print(f"Debug [Image 0]: Fx {K[0, 0] / scale:.2f} -> {K[0, 0]:.2f}")
+
+        intrinsics_np[idx] = K
         image_names.append(img_data.name)
 
     return intrinsics_np, extrinsics_np, image_names
@@ -175,19 +194,17 @@ def load_colmap_data(colmap_dir):
 # ==========================================
 
 if __name__ == "__main__":
-    # 指向包含 cameras.bin 和 images.bin 的文件夹 (通常是 sparse/0/)
     colmap_path = "/home/woshihg/PycharmProjects/Depth-Anything-3/data/dslr-undistorted/sparse/0"
 
+    # 假设你模型的输入分辨率是 504 (通常是长边)
+    target_resolution = 504
+
     try:
-        intrinsics, extrinsics, filenames = load_colmap_data(colmap_path)
+        intrinsics, extrinsics, filenames = load_colmap_data(colmap_path, process_res=target_resolution)
 
         print(f"Loaded {len(filenames)} images.")
-        print(f"Intrinsics shape: {intrinsics.shape}")  # (N, 3, 3)
-        print(f"Extrinsics shape: {extrinsics.shape}")  # (N, 4, 4)
-        print("First image name:", filenames[0])
-
-        # 你的后续逻辑...
-        # model(intrinsics=intrinsics, extrinsics=extrinsics)
+        print(f"Intrinsics shape: {intrinsics.shape}")
+        print(f"Extrinsics shape: {extrinsics.shape}")
 
     except Exception as e:
         print(f"Error: {e}")

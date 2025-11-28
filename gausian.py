@@ -4,7 +4,7 @@ import os
 from depth_anything_3.api import DepthAnything3
 
 
-def generate_3dgs_from_images(image_folder, output_dir, model_name="depth-anything/DA3-GIANT"):
+def generate_3dgs_from_images(image_folder, output_dir, model_name="depth-anything/DA3-GIANT", process_res = 504):
     """
     从图像文件夹生成 3D Gaussian Splatting (.glb) 文件。
 
@@ -49,12 +49,12 @@ def generate_3dgs_from_images(image_folder, output_dir, model_name="depth-anythi
     colmap_path = "/home/woshihg/PycharmProjects/Depth-Anything-3/data/dslr-undistorted/sparse/0"
 
     from depth_anything_3.utils.colmap_loader import load_colmap_data
-    intrinsics, extrinsics, filenames = load_colmap_data(colmap_path)
+    intrinsics, extrinsics, filenames = load_colmap_data(colmap_path, process_res)
 
     prediction = model.inference(
         image=image_paths,
         export_dir= output_dir,
-        process_res = 720,
+        process_res = process_res,
         export_format="npz-glb-gs_ply-gs_video",
         align_to_input_ext_scale=True,
         infer_gs=True,  # Required for gs_ply and gs_video exports
@@ -86,7 +86,7 @@ if __name__ == '__main__':
 
     image_folder_path = r"/home/woshihg/PycharmProjects/Depth-Anything-3/data/dslr-undistorted"  # <--- 在这里更改为您的图像文件夹路径
     output_folder_path = "output/my_3dgs_scene"
-
+    process_res = 720
     # 检查示例文件夹是否存在
     if not os.path.isdir(image_folder_path) or image_folder_path == "path/to/your/image/folder":
         print("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!")
@@ -94,4 +94,4 @@ if __name__ == '__main__':
         print("!!! 例如：'my_video_frames'                                  !!!")
         print("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!")
     else:
-        generate_3dgs_from_images(image_folder_path, output_folder_path)
+        generate_3dgs_from_images(image_folder_path, output_folder_path, process_res = process_res)

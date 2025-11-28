@@ -25,11 +25,12 @@ def generate_3dgs_from_images(image_folder, output_dir, model_name="depth-anythi
     model = DepthAnything3.from_pretrained(model_name).to(device)
 
     # 获取并排序图像文件列表
-    # 支持 .png, .jpg, .jpeg 格式
-    image_paths = sorted(glob.glob(os.path.join(image_folder, "*.png")))
-    image_paths.extend(sorted(glob.glob(os.path.join(image_folder, "*.jpg"))))
-    image_paths.extend(sorted(glob.glob(os.path.join(image_folder, "*.jpeg"))))
+    # 1. 收集所有格式的路径
+    extensions = ["*.png", "*.jpg", "*.jpeg", "*.PNG", "*.JPG"]  # 建议加上大写支持
+    image_paths = []
 
+    for ext in extensions:
+        image_paths.extend(glob.glob(os.path.join(image_folder, ext)))
     if not image_paths:
         print(f"No images found in {image_folder}")
         return
@@ -45,12 +46,21 @@ def generate_3dgs_from_images(image_folder, output_dir, model_name="depth-anythi
     #     export_dir=output_dir,
     #     export_format="splat-glb"
     # )
+    colmap_path = "/home/woshihg/PycharmProjects/Depth-Anything-3/data/dslr-undistorted/sparse/0"
+
+    from depth_anything_3.utils.colmap_loader import load_colmap_data
+    intrinsics, extrinsics, filenames = load_colmap_data(colmap_path)
+
     prediction = model.inference(
         image=image_paths,
-        export_dir="./output",
+        export_dir= output_dir,
+        process_res = 720,
         export_format="npz-glb-gs_ply-gs_video",
         align_to_input_ext_scale=True,
         infer_gs=True,  # Required for gs_ply and gs_video exports
+        extrinsics = extrinsics,
+        intrinsics = intrinsics,
+        export_kwargs={"save_sh_dc_only": False},
     )
 
     print("\nInference complete!")
@@ -74,7 +84,7 @@ if __name__ == '__main__':
     # git clone https://github.com/woshihg/Depth-Anything-3.git
     # image_folder_path = "Depth-Anything-3/assets/examples/SOH"
 
-    image_folder_path = r"/home/woshihg/kicker_dslr_jpg/kicker/images/dslr_images"  # <--- 在这里更改为您的图像文件夹路径
+    image_folder_path = r"/home/woshihg/PycharmProjects/Depth-Anything-3/data/dslr-undistorted"  # <--- 在这里更改为您的图像文件夹路径
     output_folder_path = "output/my_3dgs_scene"
 
     # 检查示例文件夹是否存在

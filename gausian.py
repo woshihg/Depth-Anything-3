@@ -34,22 +34,14 @@ def generate_3dgs_from_images(image_folder, output_dir, model_name="depth-anythi
     if not image_paths:
         print(f"No images found in {image_folder}")
         return
+    image_paths.sort()
 
     print(f"Found {len(image_paths)} images. Starting inference to generate 3DGS...")
 
-    # 运行推理并导出 3DGS
-    # - `image_paths`: 输入图像列表。
-    # - `export_dir`: 指定导出目录。
-
-    # prediction = model.inference(
-    #     image=image_paths,
-    #     export_dir=output_dir,
-    #     export_format="splat-glb"
-    # )
     colmap_path = "/home/woshihg/PycharmProjects/Depth-Anything-3/data/dslr-undistorted/sparse/0"
 
     from depth_anything_3.utils.colmap_loader import load_colmap_data
-    intrinsics, extrinsics, filenames = load_colmap_data(colmap_path, process_res)
+    intrinsics, extrinsics = load_colmap_data(colmap_path, -1)
 
     prediction = model.inference(
         image=image_paths,

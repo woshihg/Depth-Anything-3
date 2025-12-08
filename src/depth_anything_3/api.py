@@ -130,6 +130,7 @@ class DepthAnything3(nn.Module, PyTorchModelHubMixin):
         intrinsics: np.ndarray | None = None,
         align_to_input_ext_scale: bool = True,
         infer_gs: bool = False,
+        render_image: list[np.ndarray | Image.Image | str] = None,
         render_exts: np.ndarray | None = None,
         render_ixts: np.ndarray | None = None,
         render_hw: tuple[int, int] | None = None,
@@ -181,11 +182,20 @@ class DepthAnything3(nn.Module, PyTorchModelHubMixin):
             image, extrinsics, intrinsics, process_res, process_res_method
         )
 
+        # Preprocess test images
+        if render_ixts is not None:
+            _, render_exts, render_ixts = self._preprocess_inputs(
+                render_image, render_exts, render_ixts, process_res, process_res_method,
+            )
+
         # Prepare tensors for model
         imgs, ex_t, in_t = self._prepare_model_inputs(imgs_cpu, extrinsics, intrinsics)
 
         # Normalize extrinsics
-        ex_t_norm = self._normalize_extrinsics(ex_t.clone() if ex_t is not None else None)
+        if extrinsics is None:
+            ex_t_norm = self._normalize_extrinsics(ex_t.clone() if ex_t is not None else None)
+        else:
+            ex_t_norm = ex_t
 
         # Run model forward pass
         export_feat_layers = list(export_feat_layers) if export_feat_layers is not None else []
@@ -212,13 +222,16 @@ class DepthAnything3(nn.Module, PyTorchModelHubMixin):
                 if "gs_video" in export_format:
                     if "gs_video" not in export_kwargs:
                         export_kwargs["gs_video"] = {}
-                    export_kwargs["gs_video"].update(
-                        {
-                            "extrinsics": render_exts,
-                            "intrinsics": render_ixts,
-                            "out_image_hw": render_hw,
-                        }
-                    )
+
+                    render_params = {
+                        "extrinsics": render_exts,
+                        "intrinsics": render_ixts,
+                        "out_image_hw": render_hw,
+                        "render_image": render_image,
+                    }
+                    # 过滤掉值为 None 的参数
+                    export_kwargs["gs_video"].update({k: v for k, v in render_params.items() if v is not None})
+
             # Add GLB export parameters
             if "glb" in export_format:
                 if "glb" not in export_kwargs:

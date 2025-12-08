@@ -238,7 +238,7 @@ def load_colmap_data(colmap_dir, split=None):
 
     Args:
         colmap_dir: 包含 cameras.bin 和 images.bin 的文件夹路径
-        split (bool): 如果为 True，则只加载 images/train/ 目录下的图像数据。
+        split (str): 如果为 True，则只加载 images/train/ 目录下的图像数据。
 
     Returns:
         intrinsics: (N, 3, 3)

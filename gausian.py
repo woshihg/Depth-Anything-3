@@ -28,40 +28,54 @@ def generate_3dgs_from_images(image_folder, output_dir, model_name="depth-anythi
     # 1. 收集所有格式的路径
     extensions = ["*.png", "*.jpg", "*.jpeg", "*.PNG", "*.JPG"]  # 建议加上大写支持
     image_paths = []
+    image_test_paths = []
+    image_train_paths = []
 
     if split:
-        image_folder = os.path.join(image_folder, "images", "train")
-    for ext in extensions:
-        image_paths.extend(glob.glob(os.path.join(image_folder, ext)))
+        image_train_folder = os.path.join(image_folder, "images", "train")
+        image_test_folder = os.path.join(image_folder, "images", "test")
+        for ext in extensions:
+            image_test_paths.extend(glob.glob(os.path.join(image_test_folder, ext)))
+            image_train_paths.extend(glob.glob(os.path.join(image_train_folder, ext)))
+            if not image_test_paths or not image_train_paths:
+                print(f"No train/test images found in {image_folder}/images/train or {image_folder}/images/test")
+                return
+        image_test_paths.sort()
+        image_train_paths.sort()
 
-    if not image_paths:
-        print(f"No images found in {image_folder}")
-        return
-    image_paths.sort()
+        from depth_anything_3.utils.colmap_loader import load_colmap_data
+        # 加载训练数据用于生成GS模型
+        intrinsics, extrinsics = load_colmap_data(os.path.join(colmap_path), split='train')
 
-    print(f"Found {len(image_paths)} images. Starting inference to generate 3DGS...")
+        # 加载测试数据用于渲染
+        test_intrinsics, test_extrinsics = load_colmap_data(os.path.join(colmap_path), split='test')
 
-    from depth_anything_3.utils.colmap_loader import load_colmap_data
-    # 加载训练数据用于生成GS模型
-    intrinsics, extrinsics = load_colmap_data(os.path.join(colmap_path), split='train')
+        prediction = model.inference(
+            image=image_train_paths,
+            export_dir=output_dir,
+            process_res=process_res,
+            export_format="npz-glb-gs_ply-gs_video",
+            align_to_input_ext_scale=True,
+            infer_gs=True,  # Required for gs_ply and gs_video exports
+            render_image=image_test_paths,
+            extrinsics=extrinsics,
+            intrinsics=intrinsics,
+            render_exts=test_extrinsics,
+            render_ixts=test_intrinsics,
+            export_kwargs={"save_sh_dc_only": False},
+        )
+    else:
+        for ext in extensions:
+            image_paths.extend(glob.glob(os.path.join(image_folder, ext)))
 
-    # 加载测试数据用于渲染
-    test_intrinsics, test_extrinsics = load_colmap_data(os.path.join(colmap_path), split='test')
+        if not image_paths:
+            print(f"No images found in {image_folder}")
+            return
+        image_paths.sort()
+        print(f"Found {len(image_paths)} images. Starting inference to generate 3DGS...")
 
 
-    prediction = model.inference(
-        image=image_paths,
-        export_dir= output_dir,
-        process_res = process_res,
-        export_format="npz-glb-gs_ply-gs_video",
-        align_to_input_ext_scale=True,
-        infer_gs=True,  # Required for gs_ply and gs_video exports
-        extrinsics = extrinsics,
-        intrinsics = intrinsics,
-        render_exts=test_extrinsics,
-        render_ixts=test_intrinsics,
-        export_kwargs={"save_sh_dc_only": False},
-    )
+
 
     print("\nInference complete!")
     print(f"3DGS output has been saved to '{output_dir}'.")

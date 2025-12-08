@@ -16,6 +16,10 @@ import os
 from typing import Literal, Optional
 import moviepy.editor as mpy
 import torch
+import numpy as np
+from PIL import Image
+import torch.nn.functional as F
+from torchvision.transforms.functional import to_tensor
 
 from depth_anything_3.model.utils.gs_renderer import run_renderer_in_chunk_w_trj_mode
 from depth_anything_3.specs import Prediction
@@ -28,6 +32,14 @@ VIDEO_QUALITY_MAP = {
     "medium": {"crf": "23", "preset": "medium"},
     "high": {"crf": "18", "preset": "slow"},
 }
+
+
+def calculate_psnr(img1, img2):
+    """Calculates PSNR between two images. Images are tensors in [0, 1] range."""
+    mse = F.mse_loss(img1, img2)
+    if mse == 0:
+        return float('inf')
+    return 20 * torch.log10(1.0 / torch.sqrt(mse))
 
 
 def export_to_gs_ply(
@@ -64,6 +76,7 @@ def export_to_gs_video(
     extrinsics: Optional[torch.Tensor] = None,  # render views' world2cam, "b v 4 4"
     intrinsics: Optional[torch.Tensor] = None,  # render views' unnormed intrinsics, "b v 3 3"
     out_image_hw: Optional[tuple[int, int]] = None,  # render views' resolution, (h, w)
+    render_image: list[np.ndarray | Image.Image | str] = None,
     chunk_size: Optional[int] = 4,
     trj_mode: Literal[
         "original",
@@ -84,9 +97,7 @@ def export_to_gs_video(
     gs_world = prediction.gaussians
     # if target poses are not provided, render the (smooth/interpolate) input poses
     if extrinsics is not None:
-        if not isinstance(extrinsics, torch.Tensor):
-            extrinsics = torch.from_numpy(extrinsics[..., :3, :]).unsqueeze(0).to(gs_world.means)
-        tgt_extrs = extrinsics
+        tgt_extrs = extrinsics[..., :3, :].unsqueeze(0).to(gs_world.means)
     else:
         tgt_extrs = torch.from_numpy(prediction.extrinsics).unsqueeze(0).to(gs_world.means)
         if prediction.is_metric:
@@ -95,8 +106,7 @@ def export_to_gs_video(
                 tgt_extrs[:, :, :3, 3] /= scale_factor
     # 确保 intrinsics 也是一个在正确设备上的张量
     if intrinsics is not None:
-        if not isinstance(intrinsics, torch.Tensor):
-            tgt_intrs = torch.from_numpy(intrinsics).unsqueeze(0).to(gs_world.means)
+        tgt_intrs = intrinsics.unsqueeze(0).to(gs_world.means)
     else:
         tgt_intrs = torch.from_numpy(prediction.intrinsics).unsqueeze(0).to(gs_world.means)
 
@@ -123,14 +133,43 @@ def export_to_gs_video(
         color_mode=color_mode,
         enable_tqdm=enable_tqdm,
     )
-    for idx in range(test_color.shape[0]):
-        video_i = test_color[idx]
-        frames = list(
-            (video_i.clamp(0, 1) * 255).byte().permute(0, 2, 3, 1).cpu().numpy()
-        )  # T x H x W x C, uint8, numpy()
-        for f_idx, frame in enumerate(frames):
-            save_path = os.path.join(export_dir, f"gs_test_frames/{f_idx:04d}.png")
+
+    # 保存渲染的测试帧并计算 PSNR
+    if test_color is not None:
+        frames_rendered = (test_color[0].clamp(0, 1) * 255).byte().permute(0, 2, 3, 1).cpu().numpy()
+        for f_idx, frame in enumerate(frames_rendered):
+            # 按照原来的render_image路径中图像名称保存渲染图像
+            save_path_base = os.path.join(export_dir, f"gs_test_frames/")
+            if render_image is not None and f_idx < len(render_image):
+                gt_image_path = render_image[f_idx]
+                gt_image_name = os.path.basename(gt_image_path)
+                save_path = os.path.join(save_path_base, gt_image_name)
+            else:
+                save_path = os.path.join(save_path_base, f"rendered_{f_idx:04d}.png")
             mpy.ImageClip(frame).save_frame(save_path)
+        print(f"Saved {len(frames_rendered)} rendered test frames to 'gs_test_frames'.")
+
+        # 计算 PSNR
+        if render_image is not None and len(render_image) == len(frames_rendered):
+            psnr_values = []
+            for i, gt_image_path in enumerate(render_image):
+                # 加载并预处理 GT 图像
+                gt_image = Image.open(gt_image_path).convert("RGB")
+                gt_image_resized = gt_image.resize((W, H), Image.LANCZOS)
+                gt_tensor = to_tensor(gt_image_resized).to(gs_world.means.device) # C, H, W
+
+                # 获取渲染图像
+                rendered_tensor = test_color[0, i] # C, H, W
+
+                # 计算 PSNR
+                psnr = calculate_psnr(rendered_tensor, gt_tensor)
+                psnr_values.append(psnr.item())
+                print(f"PSNR for {os.path.basename(gt_image_path)}: {psnr.item():.2f} dB")
+
+            avg_psnr = np.mean(psnr_values)
+            print(f"-----------------------------------------")
+            print(f"Average PSNR for test set: {avg_psnr:.2f} dB")
+            print(f"-----------------------------------------")
 
 
     color, depth = run_renderer_in_chunk_w_trj_mode(

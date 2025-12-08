@@ -232,7 +232,7 @@ def load_and_filter_colmap_data(colmap_dir, image_folder, process_res=-1):
     # 返回过滤后的 id 列表，以便写入时使用
     return intrinsics_np, extrinsics_np, image_names, images_raw, filtered_image_ids
 
-def load_colmap_data(colmap_dir, split=False):
+def load_colmap_data(colmap_dir, split=None):
     """
     读取 COLMAP 数据。
 
@@ -245,8 +245,8 @@ def load_colmap_data(colmap_dir, split=False):
         extrinsics: (N, 4, 4) World-to-Camera Matrix (原始 COLMAP 坐标系)
         image_names: List[str] 按文件名排序
     """
-    cameras_file = os.path.join(colmap_dir, "sparse", "cameras.bin")
-    images_file = os.path.join(colmap_dir, "sparse", "images.bin")
+    cameras_file = os.path.join(colmap_dir, "sparse", "0", "cameras.bin")
+    images_file = os.path.join(colmap_dir, "sparse", "0", "images.bin")
 
     if not os.path.exists(cameras_file) or not os.path.exists(images_file):
         raise FileNotFoundError(f"COLMAP binary files not found in {colmap_dir}")
@@ -262,7 +262,7 @@ def load_colmap_data(colmap_dir, split=False):
     if split:
         # 假设 colmap_dir 是 '.../sparse/0'，我们需要找到 '.../images/train'
         base_dir = os.path.abspath(os.path.join(colmap_dir, "..", ".."))
-        train_dir = os.path.join(base_dir, "images", "train")
+        train_dir = os.path.join(base_dir, "images", split)
         if not os.path.isdir(train_dir):
             raise FileNotFoundError(f"Train directory not found: {train_dir}")
 

@@ -42,7 +42,12 @@ def generate_3dgs_from_images(image_folder, output_dir, model_name="depth-anythi
     print(f"Found {len(image_paths)} images. Starting inference to generate 3DGS...")
 
     from depth_anything_3.utils.colmap_loader import load_colmap_data
-    intrinsics, extrinsics = load_colmap_data(colmap_path, -1)
+    # 加载训练数据用于生成GS模型
+    intrinsics, extrinsics = load_colmap_data(os.path.join(colmap_path), split='train')
+
+    # 加载测试数据用于渲染
+    test_intrinsics, test_extrinsics = load_colmap_data(os.path.join(colmap_path), split='test')
+
 
     prediction = model.inference(
         image=image_paths,
@@ -53,6 +58,8 @@ def generate_3dgs_from_images(image_folder, output_dir, model_name="depth-anythi
         infer_gs=True,  # Required for gs_ply and gs_video exports
         extrinsics = extrinsics,
         intrinsics = intrinsics,
+        render_exts=test_extrinsics,
+        render_ixts=test_intrinsics,
         export_kwargs={"save_sh_dc_only": False},
     )
 

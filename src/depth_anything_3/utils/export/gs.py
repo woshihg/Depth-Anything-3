@@ -106,6 +106,29 @@ def export_to_gs_video(
         trj_mode = "wander"
         # trj_mode = "dolly_zoom"
 
+    # Render and save original input views before interpolation
+    os.makedirs(os.path.join(export_dir, "gs_test_frames"), exist_ok=True)
+    test_color, _ = run_renderer_in_chunk_w_trj_mode(
+        gaussians=gs_world,
+        extrinsics=tgt_extrs,
+        intrinsics=tgt_intrs,
+        image_shape=(H, W),
+        chunk_size=chunk_size,
+        trj_mode="original",  # Use original poses without interpolation
+        use_sh=True,
+        color_mode=color_mode,
+        enable_tqdm=enable_tqdm,
+    )
+    for idx in range(test_color.shape[0]):
+        video_i = test_color[idx]
+        frames = list(
+            (video_i.clamp(0, 1) * 255).byte().permute(0, 2, 3, 1).cpu().numpy()
+        )  # T x H x W x C, uint8, numpy()
+        for f_idx, frame in enumerate(frames):
+            save_path = os.path.join(export_dir, f"gs_test_frames/{idx:04d}_{f_idx:04d}.png")
+            mpy.ImageClip(frame).save_frame(save_path)
+
+
     color, depth = run_renderer_in_chunk_w_trj_mode(
         gaussians=gs_world,
         extrinsics=tgt_extrs,

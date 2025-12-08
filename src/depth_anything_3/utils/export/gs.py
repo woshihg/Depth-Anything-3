@@ -75,7 +75,10 @@ def export_to_gs_video(
     export_dir: str,
     extrinsics: Optional[torch.Tensor] = None,  # render views' world2cam, "b v 4 4"
     intrinsics: Optional[torch.Tensor] = None,  # render views' unnormed intrinsics, "b v 3 3"
+    render_extrinsics: Optional[torch.Tensor] = None,  # render views' world2cam, "b v 4 4"
+    render_intrinsics: Optional[torch.Tensor] = None,  # render views' unnormed intrinsics, "b v 3 3"
     out_image_hw: Optional[tuple[int, int]] = None,  # render views' resolution, (h, w)
+    image: list[np.ndarray | Image.Image | str] = None,
     render_image: list[np.ndarray | Image.Image | str] = None,
     chunk_size: Optional[int] = 4,
     trj_mode: Literal[
@@ -121,7 +124,7 @@ def export_to_gs_video(
         # trj_mode = "dolly_zoom"
 
     # Render and save original input views before interpolation
-    os.makedirs(os.path.join(export_dir, "gs_test_frames"), exist_ok=True)
+    os.makedirs(os.path.join(export_dir, "gs_train_frames"), exist_ok=True)
     test_color, _ = run_renderer_in_chunk_w_trj_mode(
         gaussians=gs_world,
         extrinsics=tgt_extrs,
@@ -139,7 +142,7 @@ def export_to_gs_video(
         frames_rendered = (test_color[0].clamp(0, 1) * 255).byte().permute(0, 2, 3, 1).cpu().numpy()
         for f_idx, frame in enumerate(frames_rendered):
             # 按照原来的render_image路径中图像名称保存渲染图像
-            save_path_base = os.path.join(export_dir, f"gs_test_frames/")
+            save_path_base = os.path.join(export_dir, f"gs_train_frames/")
             if render_image is not None and f_idx < len(render_image):
                 gt_image_path = render_image[f_idx]
                 gt_image_name = os.path.basename(gt_image_path)
@@ -147,7 +150,7 @@ def export_to_gs_video(
             else:
                 save_path = os.path.join(save_path_base, f"rendered_{f_idx:04d}.png")
             mpy.ImageClip(frame).save_frame(save_path)
-        print(f"Saved {len(frames_rendered)} rendered test frames to 'gs_test_frames'.")
+        print(f"Saved {len(frames_rendered)} rendered test frames to 'gs_train_frames'.")
 
         # 计算 PSNR
         if render_image is not None and len(render_image) == len(frames_rendered):

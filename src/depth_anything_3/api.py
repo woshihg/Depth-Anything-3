@@ -224,9 +224,12 @@ class DepthAnything3(nn.Module, PyTorchModelHubMixin):
                         export_kwargs["gs_video"] = {}
 
                     render_params = {
-                        "extrinsics": render_exts,
-                        "intrinsics": render_ixts,
+                        "extrinsics": extrinsics,
+                        "intrinsics": intrinsics,
+                        "render_extrinsics": render_exts,
+                        "render_intrinsics": render_ixts,
                         "out_image_hw": render_hw,
+                        "image": image,
                         "render_image": render_image,
                     }
                     # 过滤掉值为 None 的参数

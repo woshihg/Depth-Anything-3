@@ -70,6 +70,75 @@ def export_to_gs_ply(
     )
 
 
+def _render_and_evaluate_views(
+    gaussians, extrinsics, intrinsics, image_shape, gt_images, export_dir, frames_subdir, set_name,
+    chunk_size, color_mode, enable_tqdm
+):
+    """Helper to render views, save frames, and calculate PSNR."""
+    H, W = image_shape
+    os.makedirs(os.path.join(export_dir, frames_subdir), exist_ok=True)
+
+    rendered_color, _ = run_renderer_in_chunk_w_trj_mode(
+        gaussians=gaussians, extrinsics=extrinsics, intrinsics=intrinsics, image_shape=(H, W),
+        chunk_size=chunk_size, trj_mode="original", use_sh=True, color_mode=color_mode, enable_tqdm=enable_tqdm
+    )
+
+    if rendered_color is None:
+        return
+
+    frames_rendered = (rendered_color[0].clamp(0, 1) * 255).byte().permute(0, 2, 3, 1).cpu().numpy()
+    for f_idx, frame in enumerate(frames_rendered):
+        save_path_base = os.path.join(export_dir, frames_subdir)
+        if gt_images is not None and f_idx < len(gt_images):
+            gt_image_path = gt_images[f_idx]
+            gt_image_name = os.path.basename(gt_image_path)
+            save_path = os.path.join(save_path_base, gt_image_name)
+        else:
+            save_path = os.path.join(save_path_base, f"rendered_{f_idx:04d}.png")
+        mpy.ImageClip(frame).save_frame(save_path)
+    print(f"Saved {len(frames_rendered)} rendered {set_name} frames to '{frames_subdir}'.")
+
+    if gt_images is not None and len(gt_images) == len(frames_rendered):
+        psnr_values = []
+        for i, gt_image_path in enumerate(gt_images):
+            gt_image = Image.open(gt_image_path).convert("RGB")
+            gt_image_resized = gt_image.resize((W, H), Image.LANCZOS)
+            gt_tensor = to_tensor(gt_image_resized).to(gaussians.means.device)
+            rendered_tensor = rendered_color[0, i]
+            psnr = calculate_psnr(rendered_tensor, gt_tensor)
+            psnr_values.append(psnr.item())
+            print(f"PSNR for {os.path.basename(gt_image_path)}: {psnr.item():.2f} dB")
+
+        avg_psnr = np.mean(psnr_values)
+        print(f"-----------------------------------------")
+        print(f"Average PSNR for {set_name} set: {avg_psnr:.2f} dB")
+        print(f"-----------------------------------------")
+
+
+def _render_and_save_video_frames(color, depth, export_dir, vis_depth, video_quality, output_name, trj_mode):
+    """Helper to compile frames into a video."""
+    ffmpeg_params = [
+        "-crf", VIDEO_QUALITY_MAP[video_quality]["crf"],
+        "-preset", VIDEO_QUALITY_MAP[video_quality]["preset"],
+        "-pix_fmt", "yuv420p",
+    ]
+
+    os.makedirs(os.path.join(export_dir, "gs_video"), exist_ok=True)
+    for idx in range(color.shape[0]):
+        video_i = color[idx]
+        if vis_depth is not None:
+            depth_i = vis_depth_map_tensor(depth[idx])
+            cat_fn = hcat if vis_depth == "hcat" else vcat
+            video_i = torch.stack([cat_fn(c, d) for c, d in zip(video_i, depth_i)])
+
+        frames = list((video_i.clamp(0, 1) * 255).byte().permute(0, 2, 3, 1).cpu().numpy())
+        fps = 24
+        clip = mpy.ImageSequenceClip(frames, fps=fps)
+        final_output_name = f"{idx:04d}_{trj_mode}" if output_name is None else output_name
+        save_path = os.path.join(export_dir, f"gs_video/{final_output_name}.mp4")
+        clip.write_videofile(save_path, codec="libx264", audio=False, fps=fps, ffmpeg_params=ffmpeg_params)
+
+
 def export_to_gs_video(
     prediction: Prediction,
     export_dir: str,
@@ -96,147 +165,38 @@ def export_to_gs_video(
     video_quality: Literal["low", "medium", "high"] = "high",
 ) -> None:
     gs_world = prediction.gaussians
-    # if target poses are not provided, render the (smooth/interpolate) input poses
-    if render_extrinsics is not None:
-        tgt_extrs = render_extrinsics[..., :3, :].unsqueeze(0).to(gs_world.means)
-    else:
-        tgt_extrs = torch.from_numpy(prediction.extrinsics).unsqueeze(0).to(gs_world.means)
-        if prediction.is_metric:
-            scale_factor = prediction.scale_factor
-            if scale_factor is not None:
-                tgt_extrs[:, :, :3, 3] /= scale_factor
-    # 确保 intrinsics 也是一个在正确设备上的张量
-    if intrinsics is not None:
-        tgt_intrs = intrinsics.unsqueeze(0).to(gs_world.means)
-    else:
-        tgt_intrs = torch.from_numpy(prediction.intrinsics).unsqueeze(0).to(gs_world.means)
+    device = gs_world.means.device
 
-    # if render resolution is not provided, render the input ones
-    if out_image_hw is not None:
-        H, W = out_image_hw
-    else:
-        H, W = prediction.depth.shape[-2:]
+    # 1. Render test views if provided
+    if render_extrinsics is not None and render_intrinsics is not None:
+        H, W = out_image_hw if out_image_hw is not None else prediction.depth.shape[-2:]
+        _render_and_evaluate_views(
+            gs_world, render_extrinsics.unsqueeze(0).to(device), render_intrinsics.unsqueeze(0).to(device),
+            (H, W), render_image, export_dir, "gs_test_frames", "test",
+            chunk_size, color_mode, enable_tqdm
+        )
 
-    # Render and save original input views before interpolation
-    os.makedirs(os.path.join(export_dir, "gs_test_frames"), exist_ok=True)
-    test_color, _ = run_renderer_in_chunk_w_trj_mode(
-        gaussians=gs_world,
-        extrinsics=tgt_extrs,
-        intrinsics=tgt_intrs,
-        image_shape=(H, W),
-        chunk_size=chunk_size,
-        trj_mode="original",  # Use original poses without interpolation
-        use_sh=True,
-        color_mode=color_mode,
-        enable_tqdm=enable_tqdm,
+    # 2. Prepare extrinsics and intrinsics for training views and trajectory video
+    tgt_extrs = torch.from_numpy(prediction.extrinsics).unsqueeze(0).to(device)
+    if prediction.is_metric and prediction.scale_factor is not None:
+        tgt_extrs[:, :, :3, 3] /= prediction.scale_factor
+    tgt_intrs = torch.from_numpy(prediction.intrinsics).unsqueeze(0).to(device)
+    H, W = out_image_hw if out_image_hw is not None else prediction.depth.shape[-2:]
+
+    # 3. Render training views
+    _render_and_evaluate_views(
+        gs_world, tgt_extrs, tgt_intrs, (H, W), image, export_dir, "gs_train_frames", "train",
+        chunk_size, color_mode, enable_tqdm
     )
 
-    # 保存渲染的测试帧并计算 PSNR
-    if test_color is not None:
-        frames_rendered = (test_color[0].clamp(0, 1) * 255).byte().permute(0, 2, 3, 1).cpu().numpy()
-        for f_idx, frame in enumerate(frames_rendered):
-            # 按照原来的render_image路径中图像名称保存渲染图像
-            save_path_base = os.path.join(export_dir, f"gs_test_frames/")
-            if render_image is not None and f_idx < len(render_image):
-                gt_image_path = render_image[f_idx]
-                gt_image_name = os.path.basename(gt_image_path)
-                save_path = os.path.join(save_path_base, gt_image_name)
-            else:
-                save_path = os.path.join(save_path_base, f"rendered_{f_idx:04d}.png")
-            mpy.ImageClip(frame).save_frame(save_path)
-        print(f"Saved {len(frames_rendered)} rendered test frames to 'gs_test_frames'.")
-
-        # 计算 PSNR
-        if render_image is not None and len(render_image) == len(frames_rendered):
-            psnr_values = []
-            for i, gt_image_path in enumerate(render_image):
-                # 加载并预处理 GT 图像
-                gt_image = Image.open(gt_image_path).convert("RGB")
-                gt_image_resized = gt_image.resize((W, H), Image.LANCZOS)
-                gt_tensor = to_tensor(gt_image_resized).to(gs_world.means.device) # C, H, W
-
-                # 获取渲染图像
-                rendered_tensor = test_color[0, i] # C, H, W
-
-                # 计算 PSNR
-                psnr = calculate_psnr(rendered_tensor, gt_tensor)
-                psnr_values.append(psnr.item())
-                print(f"PSNR for {os.path.basename(gt_image_path)}: {psnr.item():.2f} dB")
-
-            avg_psnr = np.mean(psnr_values)
-            print(f"-----------------------------------------")
-            print(f"Average PSNR for test set: {avg_psnr:.2f} dB")
-            print(f"-----------------------------------------")
-
-
-    train_color, _ = run_renderer_in_chunk_w_trj_mode(
-        gaussians=gs_world,
-        extrinsics=tgt_extrs,
-        intrinsics=tgt_intrs,
-        image_shape=(H, W),
-        chunk_size=chunk_size,
-        trj_mode="original",
-        use_sh=True,
-        color_mode=color_mode,
-        enable_tqdm=enable_tqdm,
-    )
-
-    # 保存train views 图像并计算 PSNR
-    if train_color is not None:
-        frames_rendered = (train_color[0].clamp(0, 1) * 255).byte().permute(0, 2, 3, 1).cpu().numpy()
-        for f_idx, frame in enumerate(frames_rendered):
-            # 按照原来的image路径中图像名称保存渲染图像
-            save_path_base = os.path.join(export_dir, f"gs_train_frames/")
-            if image is not None and f_idx < len(image):
-                gt_image_path = image[f_idx]
-                gt_image_name = os.path.basename(gt_image_path)
-                save_path = os.path.join(save_path_base, gt_image_name)
-            else:
-                save_path = os.path.join(save_path_base, f"rendered_{f_idx:04d}.png")
-            os.makedirs(os.path.dirname(save_path), exist_ok=True)
-            mpy.ImageClip(frame).save_frame(save_path)
-        print(f"Saved {len(frames_rendered)} rendered train frames to 'gs_train_frames'.")
-
-        # 计算 PSNR
-        if image is not None and len(image) == len(frames_rendered):
-            psnr_values = []
-            for i, gt_image_path in enumerate(image):
-                # 加载并预处理 GT 图像
-                gt_image = Image.open(gt_image_path).convert("RGB")
-                gt_image_resized = gt_image.resize((W, H), Image.LANCZOS)
-                gt_tensor = to_tensor(gt_image_resized).to(gs_world.means.device) # C, H, W
-
-                # 获取渲染图像
-                rendered_tensor = train_color[0, i] # C, H, W
-
-                # 计算 PSNR
-                psnr = calculate_psnr(rendered_tensor, gt_tensor)
-                psnr_values.append(psnr.item())
-                print(f"PSNR for {os.path.basename(gt_image_path)}: {psnr.item():.2f} dB")
-
-            avg_psnr = np.mean(psnr_values)
-            print(f"-----------------------------------------")
-            print(f"Average PSNR for train set: {avg_psnr:.2f} dB")
-            print(f"-----------------------------------------")
-
-    # if single views, render wander trj
-    if tgt_extrs.shape[1] <= 1:
-        trj_mode = "wander"
-        # trj_mode = "dolly_zoom"
-
+    # 4. Render trajectory video
+    final_trj_mode = "wander" if tgt_extrs.shape[1] <= 1 else trj_mode
     color, depth = run_renderer_in_chunk_w_trj_mode(
-        gaussians=gs_world,
-        extrinsics=tgt_extrs,
-        intrinsics=tgt_intrs,
-        image_shape=(H, W),
-        chunk_size=chunk_size,
-        trj_mode=trj_mode,
-        use_sh=True,
-        color_mode=color_mode,
-        enable_tqdm=enable_tqdm,
+        gaussians=gs_world, extrinsics=tgt_extrs, intrinsics=tgt_intrs, image_shape=(H, W),
+        chunk_size=chunk_size, trj_mode=final_trj_mode, use_sh=True, color_mode=color_mode, enable_tqdm=enable_tqdm
     )
 
-    # 保存color 图像
+    # 5. Save trajectory video frames
     os.makedirs(os.path.join(export_dir, "gs_video_frames"), exist_ok=True)
     for idx in range(color.shape[0]):
         video_i = color[idx]
@@ -247,38 +207,6 @@ def export_to_gs_video(
             save_path = os.path.join(export_dir, f"gs_video_frames/{idx:04d}_{f_idx:04d}.png")
             mpy.ImageClip(frame).save_frame(save_path)
 
-
-    # save as video
-    ffmpeg_params = [
-        "-crf",
-        VIDEO_QUALITY_MAP[video_quality]["crf"],
-        "-preset",
-        VIDEO_QUALITY_MAP[video_quality]["preset"],
-        "-pix_fmt",
-        "yuv420p",
-    ]  # best compatibility
-
-    os.makedirs(os.path.join(export_dir, "gs_video"), exist_ok=True)
-    for idx in range(color.shape[0]):
-        video_i = color[idx]
-        if vis_depth is not None:
-            depth_i = vis_depth_map_tensor(depth[0])
-            cat_fn = hcat if vis_depth == "hcat" else vcat
-            video_i = torch.stack([cat_fn(c, d) for c, d in zip(video_i, depth_i)])
-        frames = list(
-            (video_i.clamp(0, 1) * 255).byte().permute(0, 2, 3, 1).cpu().numpy()
-        )  # T x H x W x C, uint8, numpy()
-
-        fps = 24
-        clip = mpy.ImageSequenceClip(frames, fps=fps)
-        output_name = f"{idx:04d}_{trj_mode}" if output_name is None else output_name
-        save_path = os.path.join(export_dir, f"gs_video/{output_name}.mp4")
-        # clip.write_videofile(save_path, codec="libx264", audio=False, bitrate="4000k")
-        clip.write_videofile(
-            save_path,
-            codec="libx264",
-            audio=False,
-            fps=fps,
-            ffmpeg_params=ffmpeg_params,
-        )
+    # 6. Compile and save the final video
+    _render_and_save_video_frames(color, depth, export_dir, vis_depth, video_quality, output_name, final_trj_mode)
     return

@@ -4,7 +4,7 @@ import os
 from depth_anything_3.api import DepthAnything3
 
 
-def generate_3dgs_from_images(image_folder, output_dir, model_name="depth-anything/DA3-GIANT", process_res = 504):
+def generate_3dgs_from_images(image_folder, output_dir, model_name="depth-anything/DA3-GIANT", process_res = 504, colmap_path=None, split=True):
     """
     从图像文件夹生成 3D Gaussian Splatting (.glb) 文件。
 
@@ -29,16 +29,17 @@ def generate_3dgs_from_images(image_folder, output_dir, model_name="depth-anythi
     extensions = ["*.png", "*.jpg", "*.jpeg", "*.PNG", "*.JPG"]  # 建议加上大写支持
     image_paths = []
 
+    if split:
+        image_folder = os.path.join(image_folder, "images", "train")
     for ext in extensions:
         image_paths.extend(glob.glob(os.path.join(image_folder, ext)))
+
     if not image_paths:
         print(f"No images found in {image_folder}")
         return
     image_paths.sort()
 
     print(f"Found {len(image_paths)} images. Starting inference to generate 3DGS...")
-
-    colmap_path = "/home/woshihg/PycharmProjects/Depth-Anything-3/data/dslr-undistorted/sparse/0"
 
     from depth_anything_3.utils.colmap_loader import load_colmap_data
     intrinsics, extrinsics = load_colmap_data(colmap_path, -1)
@@ -65,6 +66,13 @@ def generate_3dgs_from_images(image_folder, output_dir, model_name="depth-anythi
     # 打印一些返回的预测信息
     if prediction.extrinsics is not None:
         print(f"\nEstimated extrinsics for {prediction.extrinsics.shape[0]} images.")
+
+    if colmap_path is not None:
+        from depth_anything_3.utils.colmap_save import save_colmap_data
+        save_colmap_data(colmap_path, prediction.extrinsics )
+        print(f"Updated COLMAP extrinsics saved to '{colmap_path}/images.bin'.")
+
+     # 如果有深度图，打印其形状
     if prediction.depth is not None:
         print(f"Generated depth maps with shape: {prediction.depth.shape}")
 
@@ -75,15 +83,9 @@ if __name__ == '__main__':
     # 您可以将其更改为您自己的图像文件夹路径
     # git clone https://github.com/woshihg/Depth-Anything-3.git
     # image_folder_path = "Depth-Anything-3/assets/examples/SOH"
-
-    image_folder_path = r"/home/woshihg/PycharmProjects/Depth-Anything-3/data/dslr-undistorted"  # <--- 在这里更改为您的图像文件夹路径
-    output_folder_path = "output/my_3dgs_scene"
-    process_res = 720
-    # 检查示例文件夹是否存在
-    if not os.path.isdir(image_folder_path) or image_folder_path == "path/to/your/image/folder":
-        print("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!")
-        print("!!! 请将 `image_folder_path` 更改为包含您的图像序列的文件夹。 !!!")
-        print("!!! 例如：'my_video_frames'                                  !!!")
-        print("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!")
-    else:
-        generate_3dgs_from_images(image_folder_path, output_folder_path, process_res = process_res)
+    data_folder = r"/home/woshihg/PycharmProjects/Depth-Anything-3/data/mydata/images_undistorted"
+    image_folder_path = data_folder  # <--- 在这里更改为您的图像文件夹路径
+    output_folder_path = "output/mydata_with_trinsics"
+    process_res = 1080
+    colmap_path = data_folder
+    generate_3dgs_from_images(image_folder_path, output_folder_path, process_res = process_res, colmap_path=colmap_path)

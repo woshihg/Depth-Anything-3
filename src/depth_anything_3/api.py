@@ -301,12 +301,12 @@ class DepthAnything3(nn.Module, PyTorchModelHubMixin):
             return None
         transform = affine_inverse(ex_t[:, :1])
         ex_t_norm = ex_t @ transform
-        c2ws = affine_inverse(ex_t_norm)
-        translations = c2ws[..., :3, 3]
-        dists = translations.norm(dim=-1)
-        median_dist = torch.median(dists)
-        median_dist = torch.clamp(median_dist, min=1e-1)
-        ex_t_norm[..., :3, 3] = ex_t_norm[..., :3, 3] / median_dist
+        # c2ws = affine_inverse(ex_t_norm)
+        # translations = c2ws[..., :3, 3]
+        # dists = translations.norm(dim=-1)
+        # median_dist = torch.median(dists)
+        # median_dist = torch.clamp(median_dist, min=1e-1)
+        # ex_t_norm[..., :3, 3] = ex_t_norm[..., :3, 3] / median_dist
         return ex_t_norm
 
     def _align_to_input_extrinsics_intrinsics(

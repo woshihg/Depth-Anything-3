@@ -74,10 +74,10 @@ def generate_3dgs_from_images(image_folder, output_dir, model_name="depth-anythi
     if prediction.extrinsics is not None:
         print(f"\nEstimated extrinsics for {prediction.extrinsics.shape[0]} images.")
 
-    if colmap_path is not None:
-        from depth_anything_3.utils.colmap_save import save_colmap_data
-        save_colmap_data(colmap_path, prediction.extrinsics )
-        print(f"Updated COLMAP extrinsics saved to '{colmap_path}/images.bin'.")
+    # if colmap_path is not None:
+    #     from depth_anything_3.utils.colmap_save import save_colmap_data
+    #     save_colmap_data(colmap_path, prediction.extrinsics )
+    #     print(f"Updated COLMAP extrinsics saved to '{colmap_path}/images.bin'.")
 
      # 如果有深度图，打印其形状
     if prediction.depth is not None:

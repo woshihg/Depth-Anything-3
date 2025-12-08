@@ -84,6 +84,8 @@ def export_to_gs_video(
     gs_world = prediction.gaussians
     # if target poses are not provided, render the (smooth/interpolate) input poses
     if extrinsics is not None:
+        if not isinstance(extrinsics, torch.Tensor):
+            extrinsics = torch.from_numpy(extrinsics[..., :3, :]).unsqueeze(0).to(gs_world.means)
         tgt_extrs = extrinsics
     else:
         tgt_extrs = torch.from_numpy(prediction.extrinsics).unsqueeze(0).to(gs_world.means)
@@ -91,11 +93,13 @@ def export_to_gs_video(
             scale_factor = prediction.scale_factor
             if scale_factor is not None:
                 tgt_extrs[:, :, :3, 3] /= scale_factor
-    tgt_intrs = (
-        intrinsics
-        if intrinsics is not None
-        else torch.from_numpy(prediction.intrinsics).unsqueeze(0).to(gs_world.means)
-    )
+    # 确保 intrinsics 也是一个在正确设备上的张量
+    if intrinsics is not None:
+        if not isinstance(intrinsics, torch.Tensor):
+            tgt_intrs = torch.from_numpy(intrinsics).unsqueeze(0).to(gs_world.means)
+    else:
+        tgt_intrs = torch.from_numpy(prediction.intrinsics).unsqueeze(0).to(gs_world.means)
+
     # if render resolution is not provided, render the input ones
     if out_image_hw is not None:
         H, W = out_image_hw
@@ -125,7 +129,7 @@ def export_to_gs_video(
             (video_i.clamp(0, 1) * 255).byte().permute(0, 2, 3, 1).cpu().numpy()
         )  # T x H x W x C, uint8, numpy()
         for f_idx, frame in enumerate(frames):
-            save_path = os.path.join(export_dir, f"gs_test_frames/{idx:04d}_{f_idx:04d}.png")
+            save_path = os.path.join(export_dir, f"gs_test_frames/{f_idx:04d}.png")
             mpy.ImageClip(frame).save_frame(save_path)
 
 

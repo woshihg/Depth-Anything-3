@@ -260,9 +260,7 @@ def load_colmap_data(colmap_dir, split=None):
 
     # 2. 如果需要，根据 train split 过滤
     if split:
-        # 假设 colmap_dir 是 '.../sparse/0'，我们需要找到 '.../images/train'
-        base_dir = os.path.abspath(os.path.join(colmap_dir, "..", ".."))
-        train_dir = os.path.join(base_dir, "images", split)
+        train_dir = os.path.join(colmap_dir, "images", split)
         if not os.path.isdir(train_dir):
             raise FileNotFoundError(f"Train directory not found: {train_dir}")
 

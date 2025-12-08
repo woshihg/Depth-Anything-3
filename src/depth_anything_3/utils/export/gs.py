@@ -73,8 +73,6 @@ def export_to_gs_ply(
 def export_to_gs_video(
     prediction: Prediction,
     export_dir: str,
-    extrinsics: Optional[torch.Tensor] = None,  # render views' world2cam, "b v 4 4"
-    intrinsics: Optional[torch.Tensor] = None,  # render views' unnormed intrinsics, "b v 3 3"
     render_extrinsics: Optional[torch.Tensor] = None,  # render views' world2cam, "b v 4 4"
     render_intrinsics: Optional[torch.Tensor] = None,  # render views' unnormed intrinsics, "b v 3 3"
     out_image_hw: Optional[tuple[int, int]] = None,  # render views' resolution, (h, w)
@@ -99,8 +97,8 @@ def export_to_gs_video(
 ) -> None:
     gs_world = prediction.gaussians
     # if target poses are not provided, render the (smooth/interpolate) input poses
-    if extrinsics is not None:
-        tgt_extrs = extrinsics[..., :3, :].unsqueeze(0).to(gs_world.means)
+    if render_extrinsics is not None:
+        tgt_extrs = render_extrinsics[..., :3, :].unsqueeze(0).to(gs_world.means)
     else:
         tgt_extrs = torch.from_numpy(prediction.extrinsics).unsqueeze(0).to(gs_world.means)
         if prediction.is_metric:
@@ -118,13 +116,9 @@ def export_to_gs_video(
         H, W = out_image_hw
     else:
         H, W = prediction.depth.shape[-2:]
-    # if single views, render wander trj
-    if tgt_extrs.shape[1] <= 1:
-        trj_mode = "wander"
-        # trj_mode = "dolly_zoom"
 
     # Render and save original input views before interpolation
-    os.makedirs(os.path.join(export_dir, "gs_train_frames"), exist_ok=True)
+    os.makedirs(os.path.join(export_dir, "gs_test_frames"), exist_ok=True)
     test_color, _ = run_renderer_in_chunk_w_trj_mode(
         gaussians=gs_world,
         extrinsics=tgt_extrs,
@@ -142,7 +136,7 @@ def export_to_gs_video(
         frames_rendered = (test_color[0].clamp(0, 1) * 255).byte().permute(0, 2, 3, 1).cpu().numpy()
         for f_idx, frame in enumerate(frames_rendered):
             # 按照原来的render_image路径中图像名称保存渲染图像
-            save_path_base = os.path.join(export_dir, f"gs_train_frames/")
+            save_path_base = os.path.join(export_dir, f"gs_test_frames/")
             if render_image is not None and f_idx < len(render_image):
                 gt_image_path = render_image[f_idx]
                 gt_image_name = os.path.basename(gt_image_path)
@@ -150,7 +144,7 @@ def export_to_gs_video(
             else:
                 save_path = os.path.join(save_path_base, f"rendered_{f_idx:04d}.png")
             mpy.ImageClip(frame).save_frame(save_path)
-        print(f"Saved {len(frames_rendered)} rendered test frames to 'gs_train_frames'.")
+        print(f"Saved {len(frames_rendered)} rendered test frames to 'gs_test_frames'.")
 
         # 计算 PSNR
         if render_image is not None and len(render_image) == len(frames_rendered):
@@ -174,6 +168,61 @@ def export_to_gs_video(
             print(f"Average PSNR for test set: {avg_psnr:.2f} dB")
             print(f"-----------------------------------------")
 
+
+    train_color, _ = run_renderer_in_chunk_w_trj_mode(
+        gaussians=gs_world,
+        extrinsics=tgt_extrs,
+        intrinsics=tgt_intrs,
+        image_shape=(H, W),
+        chunk_size=chunk_size,
+        trj_mode="original",
+        use_sh=True,
+        color_mode=color_mode,
+        enable_tqdm=enable_tqdm,
+    )
+
+    # 保存train views 图像并计算 PSNR
+    if train_color is not None:
+        frames_rendered = (train_color[0].clamp(0, 1) * 255).byte().permute(0, 2, 3, 1).cpu().numpy()
+        for f_idx, frame in enumerate(frames_rendered):
+            # 按照原来的image路径中图像名称保存渲染图像
+            save_path_base = os.path.join(export_dir, f"gs_train_frames/")
+            if image is not None and f_idx < len(image):
+                gt_image_path = image[f_idx]
+                gt_image_name = os.path.basename(gt_image_path)
+                save_path = os.path.join(save_path_base, gt_image_name)
+            else:
+                save_path = os.path.join(save_path_base, f"rendered_{f_idx:04d}.png")
+            os.makedirs(os.path.dirname(save_path), exist_ok=True)
+            mpy.ImageClip(frame).save_frame(save_path)
+        print(f"Saved {len(frames_rendered)} rendered train frames to 'gs_train_frames'.")
+
+        # 计算 PSNR
+        if image is not None and len(image) == len(frames_rendered):
+            psnr_values = []
+            for i, gt_image_path in enumerate(image):
+                # 加载并预处理 GT 图像
+                gt_image = Image.open(gt_image_path).convert("RGB")
+                gt_image_resized = gt_image.resize((W, H), Image.LANCZOS)
+                gt_tensor = to_tensor(gt_image_resized).to(gs_world.means.device) # C, H, W
+
+                # 获取渲染图像
+                rendered_tensor = train_color[0, i] # C, H, W
+
+                # 计算 PSNR
+                psnr = calculate_psnr(rendered_tensor, gt_tensor)
+                psnr_values.append(psnr.item())
+                print(f"PSNR for {os.path.basename(gt_image_path)}: {psnr.item():.2f} dB")
+
+            avg_psnr = np.mean(psnr_values)
+            print(f"-----------------------------------------")
+            print(f"Average PSNR for train set: {avg_psnr:.2f} dB")
+            print(f"-----------------------------------------")
+
+    # if single views, render wander trj
+    if tgt_extrs.shape[1] <= 1:
+        trj_mode = "wander"
+        # trj_mode = "dolly_zoom"
 
     color, depth = run_renderer_in_chunk_w_trj_mode(
         gaussians=gs_world,

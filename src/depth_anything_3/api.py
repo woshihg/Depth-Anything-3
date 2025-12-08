@@ -224,8 +224,6 @@ class DepthAnything3(nn.Module, PyTorchModelHubMixin):
                         export_kwargs["gs_video"] = {}
 
                     render_params = {
-                        "extrinsics": extrinsics,
-                        "intrinsics": intrinsics,
                         "render_extrinsics": render_exts,
                         "render_intrinsics": render_ixts,
                         "out_image_hw": render_hw,

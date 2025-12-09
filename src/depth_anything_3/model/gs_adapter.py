@@ -16,6 +16,9 @@ from typing import Optional
 import torch
 from einops import einsum, rearrange, repeat
 from torch import nn
+import trimesh
+import os
+import numpy as np
 
 from depth_anything_3.model.utils.transform import cam_quat_xyzw_to_world_quat_wxyz
 from depth_anything_3.specs import Gaussians
@@ -65,6 +68,7 @@ class GaussianAdapter(nn.Module):
             image_shape: tuple[int, int],
             eps: float = 1e-8,
             gt_extrinsics: Optional[torch.Tensor] = None,  # "*#batch 4 4"
+            gt_intrinsics: Optional[torch.Tensor] = None,  # "*#batch 3 3"
             **kwargs,
     ) -> Gaussians:
         device = extrinsics.device
@@ -99,7 +103,9 @@ class GaussianAdapter(nn.Module):
             cam2worlds[:, :, :3, 3] = cam2worlds[:, :, :3, 3] * rearrange(
                 pose_scales, "b -> b () ()"
             )
-            gs_depths = gs_depths * rearrange(pose_scales, "b -> b () () () ()")
+            gs_depths = gs_depths * rearrange(pose_scales, "b -> b () () ()")
+            extrinsics = gt_extrinsics
+            intrinsics = gt_intrinsics
         # 1.3) casting xy in image space
         xy_ray, _ = sample_image_grid((H, W), device)
         xy_ray = xy_ray[None, None, ...].expand(b, v, -1, -1, -1)  # b v h w xy
@@ -110,12 +116,26 @@ class GaussianAdapter(nn.Module):
             xy_ray = xy_ray + offset_xy * pixel_size
             raw_gaussians = raw_gaussians[..., 2:]  # skip the offset_xy
         # 1.4) unproject depth + xy to world ray
-        origins, directions = get_world_rays(
-            xy_ray,
-            repeat(cam2worlds, "b v i j -> b v h w i j", h=H, w=W),
-            repeat(intr_normed, "b v i j -> b v h w i j", h=H, w=W),
-        )
-        gs_means_world = origins + directions * gs_depths[..., None]
+        # Re-implementing projection using pinhole camera model, similar to glb.py
+
+        # Create homogeneous pixel coordinates (normalized)
+        xy_ones = torch.cat([xy_ray, torch.ones_like(xy_ray[..., :1])], dim=-1)  # b, v, h, w, 3
+
+        # Unproject to camera coordinates rays (on z=1 plane)
+        intr_normed_inv = torch.inverse(intr_normed)  # b, v, 3, 3
+        rays_cam = einsum(intr_normed_inv, xy_ones, "b v i j, b v h w j -> b v h w i")  # b, v, h, w, 3
+
+        # Scale rays by depth to get points in camera coordinates
+        points_cam = rays_cam * gs_depths[..., None] # b, v, h, w, 3
+
+        # Convert to homogeneous coordinates for transformation
+        points_cam_h = torch.cat([points_cam, torch.ones_like(points_cam[..., :1])], dim=-1) # b, v, h, w, 4
+
+        # Transform points from camera to world coordinates
+        points_world_h = einsum(cam2worlds, points_cam_h, "b v i j, b v h w j -> b v h w i") # b, v, h, w, 4
+
+        # Convert back from homogeneous to 3D coordinates
+        gs_means_world = points_world_h[..., :3] / (points_world_h[..., 3:] + eps)
         gs_means_world = rearrange(gs_means_world, "b v h w d -> b (v h w) d")
 
         # 2. compute other GS attributes

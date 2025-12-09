@@ -173,25 +173,21 @@ class DepthAnything3Net(nn.Module):
         W: int,
         output: Dict[str, torch.Tensor],
         in_images: torch.Tensor,
-        extrinsics: torch.Tensor | None = None,
-        intrinsics: torch.Tensor | None = None,
+        gt_extrinsics: torch.Tensor | None = None,
+        gt_intrinsics: torch.Tensor | None = None,
     ) -> Dict[str, torch.Tensor]:
         """Process 3DGS parameters estimation if 3DGS head is available."""
         if self.gs_head is None or self.gs_adapter is None:
             return output
         assert output.get("depth", None) is not None, "must provide MV depth for the GS head."
 
-        # if GT camera poses are provided, use them
-        if extrinsics is not None and intrinsics is not None:
-            ctx_extr = extrinsics
-            ctx_intr = intrinsics
-        else:
-            ctx_extr = output.get("extrinsics", None)
-            ctx_intr = output.get("intrinsics", None)
-            assert (
-                ctx_extr is not None and ctx_intr is not None
-            ), "must process camera info first if GT is not available"
-        gt_extr = extrinsics
+        ctx_extr = output.get("extrinsics", None)
+        ctx_intr = output.get("intrinsics", None)
+        assert (
+            ctx_extr is not None and ctx_intr is not None
+        ), "must process camera info first if GT is not available"
+        gt_extr = gt_extrinsics
+        gt_intr = gt_intrinsics
         # homo the extr if needed
         ctx_extr = as_homogeneous(ctx_extr)
         if gt_extr is not None:
@@ -218,6 +214,7 @@ class DepthAnything3Net(nn.Module):
             raw_gaussians=raw_gaussians,
             image_shape=(H, W),
             gt_extrinsics=gt_extr,
+            gt_intrinsics=gt_intr,
         )
         output.gaussians = gs_world
 

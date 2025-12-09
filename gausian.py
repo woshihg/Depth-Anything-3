@@ -62,7 +62,7 @@ def generate_3dgs_from_images(image_folder, output_dir, model_name="depth-anythi
             intrinsics=intrinsics,
             render_exts=test_extrinsics,
             render_ixts=test_intrinsics,
-            export_kwargs={"save_sh_dc_only": False},
+            export_kwargs={},
         )
     else:
         for ext in extensions:
@@ -104,9 +104,10 @@ if __name__ == '__main__':
     # 您可以将其更改为您自己的图像文件夹路径
     # git clone https://github.com/woshihg/Depth-Anything-3.git
     # image_folder_path = "Depth-Anything-3/assets/examples/SOH"
-    data_folder = r"/home/woshihg/PycharmProjects/Depth-Anything-3/data/mydata/images_undistorted"
+    data_folder = r"/home/woshihg/PycharmProjects/Depth-Anything-3/data/gsnet"
     image_folder_path = data_folder  # <--- 在这里更改为您的图像文件夹路径
-    output_folder_path = "output/mydata_with_trinsics"
-    process_res = 1080
+    output_folder_path = "output/gsnet_with_trinsics"
+    # output_folder_path = "output/gsnet"
+    process_res = 504
     colmap_path = data_folder
     generate_3dgs_from_images(image_folder_path, output_folder_path, process_res = process_res, colmap_path=colmap_path)

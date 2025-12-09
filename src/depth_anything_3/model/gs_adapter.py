@@ -56,16 +56,16 @@ class GaussianAdapter(nn.Module):
                 self.sh_mask[degree**2 : (degree + 1) ** 2] = 0.1 * 0.25**degree
 
     def forward(
-        self,
-        extrinsics: torch.Tensor,  # "*#batch 4 4"
-        intrinsics: torch.Tensor,  # "*#batch 3 3"
-        depths: torch.Tensor,  # "*#batch"
-        opacities: torch.Tensor,  # "*#batch" | "*#batch _"
-        raw_gaussians: torch.Tensor,  # "*#batch _"
-        image_shape: tuple[int, int],
-        eps: float = 1e-8,
-        gt_extrinsics: Optional[torch.Tensor] = None,  # "*#batch 4 4"
-        **kwargs,
+            self,
+            extrinsics: torch.Tensor,  # "*#batch 4 4" (World-to-Camera)
+            intrinsics: torch.Tensor,  # "*#batch 3 3" (Pixel space intrinsics)
+            depths: torch.Tensor,  # "*#batch"
+            opacities: torch.Tensor,  # "*#batch" | "*#batch _"
+            raw_gaussians: torch.Tensor,  # "*#batch _"
+            image_shape: tuple[int, int],
+            eps: float = 1e-8,
+            gt_extrinsics: Optional[torch.Tensor] = None,  # "*#batch 4 4"
+            **kwargs,
     ) -> Gaussians:
         device = extrinsics.device
         dtype = raw_gaussians.dtype

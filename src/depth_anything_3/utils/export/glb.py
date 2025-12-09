@@ -52,6 +52,8 @@ def get_conf_thresh(
 def export_to_glb(
     prediction: Prediction,
     export_dir: str,
+    render_extrinsics: np.ndarray | None = None,
+    render_intrinsics: np.ndarray | None = None,
     num_max_points: int = 1_000_000,
     conf_thresh: float = 1.05,
     filter_black_bg: bool = False,
@@ -173,6 +175,15 @@ def export_to_glb(
             scale=scene_scale * camera_size,
         )
 
+    if show_cameras and render_extrinsics is not None and render_intrinsics is not None:
+        H, W = prediction.depth.shape[1:]
+        _add_cameras_to_scene(
+            scene=scene,
+            K=render_intrinsics,
+            ext_w2c=render_extrinsics,
+            image_sizes=[(H, W)] * render_extrinsics.shape[0],
+            scale=scene_scale * camera_size,
+        )
     # 9) Export
     os.makedirs(export_dir, exist_ok=True)
     out_path = os.path.join(export_dir, "scene.glb")

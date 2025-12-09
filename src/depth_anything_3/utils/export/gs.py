@@ -169,6 +169,8 @@ def export_to_gs_video(
 
     # 1. Render test views if provided
     if render_extrinsics is not None and render_intrinsics is not None:
+        if prediction.is_metric and prediction.scale_factor is not None:
+            render_extrinsics[:, :, :3, 3] /= prediction.scale_factor
         H, W = out_image_hw if out_image_hw is not None else prediction.depth.shape[-2:]
         _render_and_evaluate_views(
             gs_world, render_extrinsics.unsqueeze(0).to(device), render_intrinsics.unsqueeze(0).to(device),

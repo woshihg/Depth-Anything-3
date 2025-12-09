@@ -76,12 +76,6 @@ class GaussianAdapter(nn.Module):
         H, W = image_shape
         b, v = raw_gaussians.shape[:2]
 
-        # get cam2worlds and intr_normed to adapt to 3DGS codebase
-        cam2worlds = affine_inverse(extrinsics)
-        intr_normed = intrinsics.clone().detach()
-        intr_normed[..., 0, :] /= W
-        intr_normed[..., 1, :] /= H
-
         # 1. compute 3DGS means
         # 1.1) offset the predicted depth if needed
         if self.pred_offset_depth:
@@ -91,21 +85,24 @@ class GaussianAdapter(nn.Module):
             gs_depths = depths
         # 1.2) align predicted poses with GT if needed
         if gt_extrinsics is not None and not torch.equal(extrinsics, gt_extrinsics):
-
             try:
                 _, _, pose_scales = batch_align_poses_umeyama(
                     gt_extrinsics.detach().float(),
                     extrinsics.detach().float(),
                 )
             except Exception:
+                print("Umeyama alignment failed, using default scale of 1.0")
                 pose_scales = torch.ones_like(extrinsics[:, 0, 0, 0])
-            pose_scales = torch.clamp(pose_scales, min=1 / 3.0, max=3.0)
-            cam2worlds[:, :, :3, 3] = cam2worlds[:, :, :3, 3] * rearrange(
-                pose_scales, "b -> b () ()"
-            )
+
+            print("pose_scales in gs", pose_scales)
             gs_depths = gs_depths * rearrange(pose_scales, "b -> b () () ()")
-            extrinsics = gt_extrinsics
-            intrinsics = gt_intrinsics
+
+        # get cam2worlds and intr_normed to adapt to 3DGS codebase
+        cam2worlds = affine_inverse(extrinsics) if gt_extrinsics is None else affine_inverse(gt_extrinsics)
+        intr_normed = intrinsics.clone().detach() if gt_intrinsics is None else gt_intrinsics.clone().detach()
+        intr_normed[..., 0, :] /= W
+        intr_normed[..., 1, :] /= H
+
         # 1.3) casting xy in image space
         xy_ray, _ = sample_image_grid((H, W), device)
         xy_ray = xy_ray[None, None, ...].expand(b, v, -1, -1, -1)  # b v h w xy

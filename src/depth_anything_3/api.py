@@ -239,6 +239,8 @@ class DepthAnything3(nn.Module, PyTorchModelHubMixin):
                     export_kwargs["glb"] = {}
                 export_kwargs["glb"].update(
                     {
+                        "render_extrinsics": render_exts,
+                        "render_intrinsics": render_ixts,
                         "conf_thresh_percentile": conf_thresh_percentile,
                         "num_max_points": num_max_points,
                         "show_cameras": show_cameras,
@@ -344,6 +346,7 @@ class DepthAnything3(nn.Module, PyTorchModelHubMixin):
         )
         if align_to_input_ext_scale:
             prediction.extrinsics = extrinsics[..., :3, :].numpy()
+            print("prediction scale", scale)
             prediction.depth /= scale
         else:
             prediction.extrinsics = aligned_extrinsics

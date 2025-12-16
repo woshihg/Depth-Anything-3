@@ -104,6 +104,8 @@ class DepthAnything3(nn.Module, PyTorchModelHubMixin):
         intrinsics: torch.Tensor | None = None,
         export_feat_layers: list[int] | None = None,
         infer_gs: bool = False,
+        use_ray_pose: bool = False,
+        ref_view_strategy: str = "saddle_balanced",
     ) -> dict[str, torch.Tensor]:
         """
         Forward pass through the model.
@@ -113,6 +115,9 @@ class DepthAnything3(nn.Module, PyTorchModelHubMixin):
             extrinsics: Optional camera extrinsics with shape ``(B, N, 4, 4)``.
             intrinsics: Optional camera intrinsics with shape ``(B, N, 3, 3)``.
             export_feat_layers: Layer indices to return intermediate features for.
+            infer_gs: Enable Gaussian Splatting branch.
+            use_ray_pose: Use ray-based pose estimation instead of camera decoder.
+            ref_view_strategy: Strategy for selecting reference view from multiple views.
 
         Returns:
             Dictionary containing model predictions
@@ -121,7 +126,9 @@ class DepthAnything3(nn.Module, PyTorchModelHubMixin):
         autocast_dtype = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
         with torch.no_grad():
             with torch.autocast(device_type=image.device.type, dtype=autocast_dtype):
-                return self.model(image, extrinsics, intrinsics, export_feat_layers, infer_gs)
+                return self.model(
+                    image, extrinsics, intrinsics, export_feat_layers, infer_gs, use_ray_pose, ref_view_strategy
+                )
 
     def inference(
         self,
@@ -131,6 +138,8 @@ class DepthAnything3(nn.Module, PyTorchModelHubMixin):
         align_to_input_ext_scale: bool = True,
         infer_gs: bool = False,
         render_image: list[np.ndarray | Image.Image | str] = None,
+        use_ray_pose: bool = False,
+        ref_view_strategy: str = "saddle_balanced",
         render_exts: np.ndarray | None = None,
         render_ixts: np.ndarray | None = None,
         render_hw: tuple[int, int] | None = None,
@@ -157,6 +166,10 @@ class DepthAnything3(nn.Module, PyTorchModelHubMixin):
             intrinsics: Camera intrinsics (N, 3, 3)
             align_to_input_ext_scale: whether to align the input pose scale to the prediction
             infer_gs: Enable the 3D Gaussian branch (needed for `gs_ply`/`gs_video` exports)
+            use_ray_pose: Use ray-based pose estimation instead of camera decoder (default: False)
+            ref_view_strategy: Strategy for selecting reference view from multiple views.
+                Options: "first", "middle", "saddle_balanced", "saddle_sim_range".
+                Default: "saddle_balanced". For single view input (S ≤ 2), no reordering is performed.
             render_exts: Optional render extrinsics for Gaussian video export
             render_ixts: Optional render intrinsics for Gaussian video export
             render_hw: Optional render resolution for Gaussian video export
@@ -176,6 +189,9 @@ class DepthAnything3(nn.Module, PyTorchModelHubMixin):
         """
         if "gs" in export_format:
             assert infer_gs, "must set `infer_gs=True` to perform gs-related export."
+
+        if "colmap" in export_format:
+            assert isinstance(image[0], str), "`image` must be image paths for COLMAP export."
 
         # Preprocess images
         imgs_cpu, extrinsics, intrinsics = self._preprocess_inputs(
@@ -200,7 +216,9 @@ class DepthAnything3(nn.Module, PyTorchModelHubMixin):
         # Run model forward pass
         export_feat_layers = list(export_feat_layers) if export_feat_layers is not None else []
 
-        raw_output = self._run_model_forward(imgs, ex_t_norm, in_t, export_feat_layers, infer_gs)
+        raw_output = self._run_model_forward(
+            imgs, ex_t_norm, in_t, export_feat_layers, infer_gs, use_ray_pose, ref_view_strategy
+        )
 
         # Convert raw output to prediction
         prediction = self._convert_to_prediction(raw_output)
@@ -255,6 +273,17 @@ class DepthAnything3(nn.Module, PyTorchModelHubMixin):
                         "fps": feat_vis_fps,
                     }
                 )
+            # Add COLMAP export parameters
+            if "colmap" in export_format:
+                if "colmap" not in export_kwargs:
+                    export_kwargs["colmap"] = {}
+                export_kwargs["colmap"].update(
+                    {
+                        "image_paths": image,
+                        "conf_thresh_percentile": conf_thresh_percentile,
+                        "process_res_method": process_res_method,
+                    }
+                )
             self._export_results(prediction, export_format, export_dir, **export_kwargs)
 
         return prediction
@@ -266,7 +295,7 @@ class DepthAnything3(nn.Module, PyTorchModelHubMixin):
         intrinsics: np.ndarray | None = None,
         process_res: int = 504,
         process_res_method: str = "upper_bound_resize",
-    ) -> torch.Tensor:
+    ) -> tuple[torch.Tensor, torch.Tensor | None, torch.Tensor | None]:
         """Preprocess input images using input processor."""
         start_time = time.time()
         imgs_cpu, extrinsics, intrinsics = self.input_processor(
@@ -288,8 +317,8 @@ class DepthAnything3(nn.Module, PyTorchModelHubMixin):
     def _prepare_model_inputs(
         self,
         imgs_cpu: torch.Tensor,
-        extrinsics: torch.tensor | None,
-        intrinsics: torch.tensor | None,
+        extrinsics: torch.Tensor | None,
+        intrinsics: torch.Tensor | None,
     ) -> tuple[torch.Tensor, torch.Tensor | None, torch.Tensor | None]:
         """Prepare tensors for model input."""
         device = self._get_model_device()
@@ -311,7 +340,7 @@ class DepthAnything3(nn.Module, PyTorchModelHubMixin):
 
         return imgs, ex_t, in_t
 
-    def _normalize_extrinsics(self, ex_t: torch.Tensor) -> torch.Tensor:
+    def _normalize_extrinsics(self, ex_t: torch.Tensor | None) -> torch.Tensor | None:
         """Normalize extrinsics"""
         if ex_t is None:
             return None
@@ -327,8 +356,8 @@ class DepthAnything3(nn.Module, PyTorchModelHubMixin):
 
     def _align_to_input_extrinsics_intrinsics(
         self,
-        extrinsics: torch.Tensor,
-        intrinsics: torch.Tensor,
+        extrinsics: torch.Tensor | None,
+        intrinsics: torch.Tensor | None,
         prediction: Prediction,
         align_to_input_ext_scale: bool = True,
         ransac_view_thresh: int = 10,
@@ -346,7 +375,6 @@ class DepthAnything3(nn.Module, PyTorchModelHubMixin):
         )
         if align_to_input_ext_scale:
             prediction.extrinsics = extrinsics[..., :3, :].numpy()
-            print("prediction scale", scale)
             prediction.depth /= scale
         else:
             prediction.extrinsics = aligned_extrinsics
@@ -359,6 +387,8 @@ class DepthAnything3(nn.Module, PyTorchModelHubMixin):
         in_t: torch.Tensor | None,
         export_feat_layers: Sequence[int] | None = None,
         infer_gs: bool = False,
+        use_ray_pose: bool = False,
+        ref_view_strategy: str = "saddle_balanced",
     ) -> dict[str, torch.Tensor]:
         """Run model forward pass."""
         device = imgs.device
@@ -367,7 +397,7 @@ class DepthAnything3(nn.Module, PyTorchModelHubMixin):
             torch.cuda.synchronize(device)
         start_time = time.time()
         feat_layers = list(export_feat_layers) if export_feat_layers is not None else None
-        output = self.forward(imgs, ex_t, in_t, feat_layers, infer_gs)
+        output = self.forward(imgs, ex_t, in_t, feat_layers, infer_gs, use_ray_pose, ref_view_strategy)
         if need_sync:
             torch.cuda.synchronize(device)
         end_time = time.time()

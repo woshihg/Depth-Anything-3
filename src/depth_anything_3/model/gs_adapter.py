@@ -76,6 +76,12 @@ class GaussianAdapter(nn.Module):
         H, W = image_shape
         b, v = raw_gaussians.shape[:2]
 
+        # get cam2worlds and intr_normed to adapt to 3DGS codebase
+        cam2worlds = affine_inverse(extrinsics)
+        intr_normed = intrinsics.clone().detach()
+        intr_normed[..., 0, :] /= W
+        intr_normed[..., 1, :] /= H
+
         # 1. compute 3DGS means
         # 1.1) offset the predicted depth if needed
         if self.pred_offset_depth:
@@ -91,18 +97,12 @@ class GaussianAdapter(nn.Module):
                     extrinsics.detach().float(),
                 )
             except Exception:
-                print("Umeyama alignment failed, using default scale of 1.0")
                 pose_scales = torch.ones_like(extrinsics[:, 0, 0, 0])
-
-            print("pose_scales in gs", pose_scales)
-            gs_depths = gs_depths * rearrange(pose_scales, "b -> b () () ()")
-
-        # get cam2worlds and intr_normed to adapt to 3DGS codebase
-        cam2worlds = affine_inverse(extrinsics) if gt_extrinsics is None else affine_inverse(gt_extrinsics)
-        intr_normed = intrinsics.clone().detach() if gt_intrinsics is None else gt_intrinsics.clone().detach()
-        intr_normed[..., 0, :] /= W
-        intr_normed[..., 1, :] /= H
-
+            # pose_scales = torch.clamp(pose_scales, min=1 / 3.0, max=3.0)
+            cam2worlds[:, :, :3, 3] = cam2worlds[:, :, :3, 3] * rearrange(
+                pose_scales, "b -> b () ()"
+            )  # [b, i, j]
+            gs_depths = gs_depths * rearrange(pose_scales, "b -> b () () ()")  # [b, v, h, w]
         # 1.3) casting xy in image space
         xy_ray, _ = sample_image_grid((H, W), device)
         xy_ray = xy_ray[None, None, ...].expand(b, v, -1, -1, -1)  # b v h w xy
@@ -113,26 +113,12 @@ class GaussianAdapter(nn.Module):
             xy_ray = xy_ray + offset_xy * pixel_size
             raw_gaussians = raw_gaussians[..., 2:]  # skip the offset_xy
         # 1.4) unproject depth + xy to world ray
-        # Re-implementing projection using pinhole camera model, similar to glb.py
-
-        # Create homogeneous pixel coordinates (normalized)
-        xy_ones = torch.cat([xy_ray, torch.ones_like(xy_ray[..., :1])], dim=-1)  # b, v, h, w, 3
-
-        # Unproject to camera coordinates rays (on z=1 plane)
-        intr_normed_inv = torch.inverse(intr_normed)  # b, v, 3, 3
-        rays_cam = einsum(intr_normed_inv, xy_ones, "b v i j, b v h w j -> b v h w i")  # b, v, h, w, 3
-
-        # Scale rays by depth to get points in camera coordinates
-        points_cam = rays_cam * gs_depths[..., None] # b, v, h, w, 3
-
-        # Convert to homogeneous coordinates for transformation
-        points_cam_h = torch.cat([points_cam, torch.ones_like(points_cam[..., :1])], dim=-1) # b, v, h, w, 4
-
-        # Transform points from camera to world coordinates
-        points_world_h = einsum(cam2worlds, points_cam_h, "b v i j, b v h w j -> b v h w i") # b, v, h, w, 4
-
-        # Convert back from homogeneous to 3D coordinates
-        gs_means_world = points_world_h[..., :3] / (points_world_h[..., 3:] + eps)
+        origins, directions = get_world_rays(
+            xy_ray,
+            repeat(cam2worlds, "b v i j -> b v h w i j", h=H, w=W),
+            repeat(intr_normed, "b v i j -> b v h w i j", h=H, w=W),
+        )
+        gs_means_world = origins + directions * gs_depths[..., None]
         gs_means_world = rearrange(gs_means_world, "b v h w d -> b (v h w) d")
 
         # 2. compute other GS attributes

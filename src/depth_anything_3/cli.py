@@ -33,7 +33,12 @@ from depth_anything_3.services.input_handlers import (
     VideoHandler,
     parse_export_feat,
 )
-from depth_anything_3.utils.constants import DEFAULT_EXPORT_DIR, DEFAULT_GALLERY_DIR, DEFAULT_GRADIO_DIR, DEFAULT_MODEL
+from depth_anything_3.utils.constants import (
+    DEFAULT_EXPORT_DIR,
+    DEFAULT_GALLERY_DIR,
+    DEFAULT_GRADIO_DIR,
+    DEFAULT_MODEL,
+)
 
 os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 
@@ -136,6 +141,14 @@ def auto(
     align_to_input_ext_scale: bool = typer.Option(
         True, help="[COLMAP] Align prediction to input extrinsics scale"
     ),
+    # Pose estimation options
+    use_ray_pose: bool = typer.Option(
+        False, help="Use ray-based pose estimation instead of camera decoder"
+    ),
+    ref_view_strategy: str = typer.Option(
+        "saddle_balanced",
+        help="Reference view selection strategy: empty, first, middle, saddle_balanced, saddle_sim_range",
+    ),
     # GLB export options
     conf_thresh_percentile: float = typer.Option(
         40.0, help="[GLB] Lower percentile for adaptive confidence threshold"
@@ -201,6 +214,8 @@ def auto(
             process_res=process_res,
             process_res_method=process_res_method,
             export_feat_layers=export_feat_layers,
+            use_ray_pose=use_ray_pose,
+            ref_view_strategy=ref_view_strategy,
             conf_thresh_percentile=conf_thresh_percentile,
             num_max_points=num_max_points,
             show_cameras=show_cameras,
@@ -226,6 +241,8 @@ def auto(
             process_res=process_res,
             process_res_method=process_res_method,
             export_feat_layers=export_feat_layers,
+            use_ray_pose=use_ray_pose,
+            ref_view_strategy=ref_view_strategy,
             conf_thresh_percentile=conf_thresh_percentile,
             num_max_points=num_max_points,
             show_cameras=show_cameras,
@@ -251,6 +268,8 @@ def auto(
             process_res=process_res,
             process_res_method=process_res_method,
             export_feat_layers=export_feat_layers,
+            use_ray_pose=use_ray_pose,
+            ref_view_strategy=ref_view_strategy,
             conf_thresh_percentile=conf_thresh_percentile,
             num_max_points=num_max_points,
             show_cameras=show_cameras,
@@ -281,6 +300,8 @@ def auto(
             extrinsics=extrinsics,
             intrinsics=intrinsics,
             align_to_input_ext_scale=align_to_input_ext_scale,
+            use_ray_pose=use_ray_pose,
+            ref_view_strategy=ref_view_strategy,
             conf_thresh_percentile=conf_thresh_percentile,
             num_max_points=num_max_points,
             show_cameras=show_cameras,
@@ -312,6 +333,14 @@ def image(
     ),
     auto_cleanup: bool = typer.Option(
         False, help="Automatically clean export directory if it exists (no prompt)"
+    ),
+    # Pose estimation options
+    use_ray_pose: bool = typer.Option(
+        False, help="Use ray-based pose estimation instead of camera decoder"
+    ),
+    ref_view_strategy: str = typer.Option(
+        "saddle_balanced",
+        help="Reference view selection strategy: empty, first, middle, saddle_balanced, saddle_sim_range",
     ),
     # GLB export options
     conf_thresh_percentile: float = typer.Option(
@@ -350,6 +379,8 @@ def image(
         process_res=process_res,
         process_res_method=process_res_method,
         export_feat_layers=export_feat_layers,
+        use_ray_pose=use_ray_pose,
+        reference_view_strategy=reference_view_strategy,
         conf_thresh_percentile=conf_thresh_percentile,
         num_max_points=num_max_points,
         show_cameras=show_cameras,
@@ -381,6 +412,14 @@ def images(
     ),
     auto_cleanup: bool = typer.Option(
         False, help="Automatically clean export directory if it exists (no prompt)"
+    ),
+    # Pose estimation options
+    use_ray_pose: bool = typer.Option(
+        False, help="Use ray-based pose estimation instead of camera decoder"
+    ),
+    ref_view_strategy: str = typer.Option(
+        "saddle_balanced",
+        help="Reference view selection strategy: empty, first, middle, saddle_balanced, saddle_sim_range",
     ),
     # GLB export options
     conf_thresh_percentile: float = typer.Option(
@@ -419,6 +458,8 @@ def images(
         process_res=process_res,
         process_res_method=process_res_method,
         export_feat_layers=export_feat_layers,
+        use_ray_pose=use_ray_pose,
+        reference_view_strategy=reference_view_strategy,
         conf_thresh_percentile=conf_thresh_percentile,
         num_max_points=num_max_points,
         show_cameras=show_cameras,
@@ -455,6 +496,14 @@ def colmap(
     ),
     auto_cleanup: bool = typer.Option(
         False, help="Automatically clean export directory if it exists (no prompt)"
+    ),
+    # Pose estimation options
+    use_ray_pose: bool = typer.Option(
+        False, help="Use ray-based pose estimation instead of camera decoder"
+    ),
+    ref_view_strategy: str = typer.Option(
+        "saddle_balanced",
+        help="Reference view selection strategy: empty, first, middle, saddle_balanced, saddle_sim_range",
     ),
     # GLB export options
     conf_thresh_percentile: float = typer.Option(
@@ -496,6 +545,8 @@ def colmap(
         extrinsics=extrinsics,
         intrinsics=intrinsics,
         align_to_input_ext_scale=align_to_input_ext_scale,
+        use_ray_pose=use_ray_pose,
+        reference_view_strategy=reference_view_strategy,
         conf_thresh_percentile=conf_thresh_percentile,
         num_max_points=num_max_points,
         show_cameras=show_cameras,
@@ -525,6 +576,14 @@ def video(
     ),
     auto_cleanup: bool = typer.Option(
         False, help="Automatically clean export directory if it exists (no prompt)"
+    ),
+    # Pose estimation options
+    use_ray_pose: bool = typer.Option(
+        False, help="Use ray-based pose estimation instead of camera decoder"
+    ),
+    ref_view_strategy: str = typer.Option(
+        "saddle_balanced",
+        help="Reference view selection strategy: empty, first, middle, saddle_balanced, saddle_sim_range",
     ),
     # GLB export options
     conf_thresh_percentile: float = typer.Option(
@@ -563,6 +622,8 @@ def video(
         process_res=process_res,
         process_res_method=process_res_method,
         export_feat_layers=export_feat_layers,
+        use_ray_pose=use_ray_pose,
+        reference_view_strategy=reference_view_strategy,
         conf_thresh_percentile=conf_thresh_percentile,
         num_max_points=num_max_points,
         show_cameras=show_cameras,
@@ -623,9 +684,9 @@ def backend(
 
 @app.command()
 def gradio(
-    model_dir: str = typer.Option(DEFAULT_MODEL,help="Model directory path"),
-    workspace_dir: str = typer.Option(DEFAULT_GRADIO_DIR,help="Workspace directory path"),
-    gallery_dir: str = typer.Option(DEFAULT_GALLERY_DIR,help="Gallery directory path"),
+    model_dir: str = typer.Option(DEFAULT_MODEL, help="Model directory path"),
+    workspace_dir: str = typer.Option(DEFAULT_GRADIO_DIR, help="Workspace directory path"),
+    gallery_dir: str = typer.Option(DEFAULT_GALLERY_DIR, help="Gallery directory path"),
     host: str = typer.Option("127.0.0.1", help="Host address to bind to"),
     port: int = typer.Option(7860, help="Port number to bind to"),
     share: bool = typer.Option(False, help="Create a public link for the app"),

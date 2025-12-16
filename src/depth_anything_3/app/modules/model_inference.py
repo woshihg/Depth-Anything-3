@@ -19,7 +19,6 @@ This module handles all model-related operations including inference,
 data processing, and result preparation.
 """
 
-import gc
 import glob
 import os
 from typing import Any, Dict, Optional, Tuple
@@ -27,6 +26,7 @@ import numpy as np
 import torch
 
 from depth_anything_3.api import DepthAnything3
+from depth_anything_3.utils.memory import cleanup_cuda_memory
 from depth_anything_3.utils.export.glb import export_to_glb
 from depth_anything_3.utils.export.gs import export_to_gs_video
 
@@ -66,10 +66,10 @@ class ModelInference:
         filter_white_bg: bool = False,
         process_res_method: str = "upper_bound_resize",
         show_camera: bool = True,
-        selected_first_frame: Optional[str] = None,
         save_percentage: float = 30.0,
         num_max_points: int = 1_000_000,
         infer_gs: bool = False,
+        ref_view_strategy: str = "saddle_balanced",
         gs_trj_mode: str = "extend",
         gs_video_quality: str = "high",
     ) -> Tuple[Any, Dict[int, Dict[str, Any]]]:
@@ -78,15 +78,16 @@ class ModelInference:
 
         Args:
             target_dir: Directory containing images
-            apply_mask: Whether to apply mask for ambiguous depth classes
-            mask_edges: Whether to mask edges
             filter_black_bg: Whether to filter black background
             filter_white_bg: Whether to filter white background
             process_res_method: Method for resizing input images
             show_camera: Whether to show camera in 3D view
-            selected_first_frame: Selected first frame filename
             save_percentage: Percentage of points to save (0-100)
+            num_max_points: Maximum number of points in point cloud
             infer_gs: Whether to infer 3D Gaussian Splatting
+            ref_view_strategy: Reference view selection strategy
+            gs_trj_mode: Trajectory mode for 3DGS
+            gs_video_quality: Video quality for 3DGS
 
         Returns:
             Tuple of (prediction, processed_data)
@@ -116,36 +117,9 @@ class ModelInference:
         print(f"Found {len(all_image_paths)} images")
         print(f"All image paths: {all_image_paths}")
 
-        # Apply first frame selection logic
-        if selected_first_frame:
-            # Find the image with matching filename
-            selected_path = None
-            for path in all_image_paths:
-                if os.path.basename(path) == selected_first_frame:
-                    selected_path = path
-                    break
-
-            if selected_path:
-                # Move selected frame to the front
-                image_paths = [selected_path] + [
-                    path for path in all_image_paths if path != selected_path
-                ]
-                print(f"User selected first frame: {selected_first_frame} -> {selected_path}")
-                print(f"Reordered image paths: {image_paths}")
-            else:
-                # Use default order if no match found
-                image_paths = all_image_paths
-                print(
-                    f"Selected frame '{selected_first_frame}' not found in image paths. "
-                    "Using default order."
-                )
-                first_frame_display = image_paths[0] if image_paths else "No images"
-                print(f"Using default order (first frame): {first_frame_display}")
-        else:
-            # Use default order (sorted)
-            image_paths = all_image_paths
-            first_frame_display = image_paths[0] if image_paths else "No images"
-            print(f"Using default order (first frame): {first_frame_display}")
+        # Use sorted image order (reference view will be selected automatically)
+        image_paths = all_image_paths
+        print(f"Reference view selection strategy: {ref_view_strategy}")
 
         if len(image_paths) == 0:
             raise ValueError("No images found. Check your upload.")
@@ -158,7 +132,11 @@ class ModelInference:
         print(f"Running inference with method: {actual_method}")
         with torch.no_grad():
             prediction = self.model.inference(
-                image_paths, export_dir=None, process_res_method=actual_method, infer_gs=infer_gs
+                image_paths,
+                export_dir=None,
+                process_res_method=actual_method,
+                infer_gs=infer_gs,
+                ref_view_strategy=ref_view_strategy,
             )
         # num_max_points: int = 1_000_000,
         export_to_glb(
@@ -191,8 +169,8 @@ class ModelInference:
         # Process results
         processed_data = self._process_results(target_dir, prediction, image_paths)
 
-        # Clean up
-        torch.cuda.empty_cache()
+        # Clean up using centralized memory utilities for consistency with backend
+        cleanup_cuda_memory()
 
         return prediction, processed_data
 
@@ -279,8 +257,4 @@ class ModelInference:
 
         return processed_data
 
-    def cleanup(self) -> None:
-        """Clean up GPU memory."""
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
-        gc.collect()
+    # cleanup() removed: call cleanup_cuda_memory() directly where needed.

@@ -1,0 +1,82 @@
+import torch
+import glob
+import os
+from depth_anything_3.api import DepthAnything3
+
+
+def generate_3dgs_from_images(image_folder, output_dir, model_name="depth-anything/DA3NESTED-GIANT-LARGE"):
+    """
+    从图像文件夹生成 3D Gaussian Splatting (.glb) 文件。
+
+    Args:
+        image_folder (str): 包含输入图像序列的文件夹路径。
+        output_dir (str): 保存输出文件的目录。
+        model_name (str): 要使用的预训练模型名称。
+    """
+    # 检查 CUDA 是否可用，否则使用 CPU
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(f"Using device: {device}")
+
+    # 创建输出目录
+    os.makedirs(output_dir, exist_ok=True)
+
+    print("Loading Depth Anything 3 model...")
+    # 从预训练权重加载模型
+    model = DepthAnything3.from_pretrained(model_name).to(device)
+
+    # 获取并排序图像文件列表
+    # 支持 .png, .jpg, .jpeg 格式
+    image_paths = sorted(glob.glob(os.path.join(image_folder, "*.png")))
+    image_paths.extend(sorted(glob.glob(os.path.join(image_folder, "*.jpg"))))
+    image_paths.extend(sorted(glob.glob(os.path.join(image_folder, "*.jpeg"))))
+
+    if not image_paths:
+        print(f"No images found in {image_folder}")
+        return
+
+    print(f"Found {len(image_paths)} images. Starting inference to generate 3DGS...")
+
+    # 运行推理并导出 3DGS
+    # - `image_paths`: 输入图像列表。
+    # - `export_dir`: 指定导出目录。
+    # - `export_format="splat-glb"`:
+    #   这是关键！它告诉模型执行 3DGS 生成，并将结果保存为一个 .glb 文件
+    #   以及一个包含高斯参数的 .ply 文件。
+    prediction = model.inference(
+        image=image_paths,
+        export_dir=output_dir,
+        export_format="splat-glb"
+    )
+
+    print("\nInference complete!")
+    print(f"3DGS output has been saved to '{output_dir}'.")
+    print("You should find a '.glb' file which can be viewed in a 3D viewer (e.g., Windows 3D Viewer, Blender).")
+    print("You will also find:")
+    print("- A '.ply' file containing the raw Gaussian Splatting data.")
+    print("- A 'depth' subfolder with individual depth maps.")
+
+    # 打印一些返回的预测信息
+    if prediction.extrinsics is not None:
+        print(f"\nEstimated extrinsics for {prediction.extrinsics.shape[0]} images.")
+    if prediction.depth is not None:
+        print(f"Generated depth maps with shape: {prediction.depth.shape}")
+
+
+if __name__ == '__main__':
+    # --- 配置 ---
+    # 假设您在 'assets/examples/SOH' 文件夹中有一系列图像
+    # 您可以将其更改为您自己的图像文件夹路径
+    # git clone https://github.com/woshihg/Depth-Anything-3.git
+    # image_folder_path = "Depth-Anything-3/assets/examples/SOH"
+
+    image_folder_path = "path/to/your/image/folder"  # <--- 在这里更改为您的图像文件夹路径
+    output_folder_path = "output/my_3dgs_scene"
+
+    # 检查示例文件夹是否存在
+    if not os.path.isdir(image_folder_path) or image_folder_path == "path/to/your/image/folder":
+        print("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!")
+        print("!!! 请将 `image_folder_path` 更改为包含您的图像序列的文件夹。 !!!")
+        print("!!! 例如：'my_video_frames'                                  !!!")
+        print("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!")
+    else:
+        generate_3dgs_from_images(image_folder_path, output_folder_path)

@@ -106,6 +106,8 @@ class DepthAnything3Net(nn.Module):
         infer_gs: bool = False,
         use_ray_pose: bool = False,
         ref_view_strategy: str = "saddle_balanced",
+        mask_paths: list[str] = None,
+        ex_gt: torch.Tensor | None = None,
     ) -> Dict[str, torch.Tensor]:
         """
         Forward pass through the network.
@@ -143,7 +145,7 @@ class DepthAnything3Net(nn.Module):
             else:
                 output = self._process_camera_estimation(feats, H, W, output)
             if infer_gs:
-                output = self._process_gs_head(feats, H, W, output, x, extrinsics, intrinsics)
+                output = self._process_gs_head(feats, H, W, output, x, ex_gt, intrinsics, mask_paths)
 
         output = self._process_mono_sky_estimation(output)
 
@@ -236,6 +238,7 @@ class DepthAnything3Net(nn.Module):
         in_images: torch.Tensor,
         gt_extrinsics: torch.Tensor | None = None,
         gt_intrinsics: torch.Tensor | None = None,
+        mask_paths: list[str] = None,
     ) -> Dict[str, torch.Tensor]:
         """Process 3DGS parameters estimation if 3DGS head is available."""
         if self.gs_head is None or self.gs_adapter is None:
@@ -279,6 +282,7 @@ class DepthAnything3Net(nn.Module):
             image_shape=(H, W),
             gt_extrinsics=gt_extr,
             gt_intrinsics=gt_intr,
+            masks = mask_paths,  
         )
         output.gaussians = gs_world
 

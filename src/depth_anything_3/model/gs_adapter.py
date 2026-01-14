@@ -12,13 +12,14 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import Optional
+from typing import Optional, Union
 import torch
 from einops import einsum, rearrange, repeat
 from torch import nn
 import trimesh
 import os
 import numpy as np
+from PIL import Image
 
 from depth_anything_3.model.utils.transform import cam_quat_xyzw_to_world_quat_wxyz
 from depth_anything_3.specs import Gaussians
@@ -69,6 +70,7 @@ class GaussianAdapter(nn.Module):
             eps: float = 1e-8,
             gt_extrinsics: Optional[torch.Tensor] = None,  # "*#batch 4 4"
             gt_intrinsics: Optional[torch.Tensor] = None,  # "*#batch 3 3"
+            masks: Optional[Union[torch.Tensor, list[str], list[list[str]]]] = None,  # "*#batch" binary mask to keep only foreground pixels
             **kwargs,
     ) -> Gaussians:
         device = extrinsics.device
@@ -98,11 +100,12 @@ class GaussianAdapter(nn.Module):
                 )
             except Exception:
                 pose_scales = torch.ones_like(extrinsics[:, 0, 0, 0])
-            # pose_scales = torch.clamp(pose_scales, min=1 / 3.0, max=3.0)
-            cam2worlds[:, :, :3, 3] = cam2worlds[:, :, :3, 3] * rearrange(
-                pose_scales, "b -> b () ()"
-            )  # [b, i, j]
+            
+            # 缩放深度以匹配 GT 尺度
             gs_depths = gs_depths * rearrange(pose_scales, "b -> b () () ()")  # [b, v, h, w]
+            
+            # 直接使用 GT 位姿进行后续的投影和变换，从而无需 recenter 处理
+            cam2worlds = affine_inverse(gt_extrinsics)
         # 1.3) casting xy in image space
         xy_ray, _ = sample_image_grid((H, W), device)
         xy_ray = xy_ray[None, None, ...].expand(b, v, -1, -1, -1)  # b v h w xy
@@ -163,6 +166,67 @@ class GaussianAdapter(nn.Module):
 
         # 2.4) 3DGS opacity
         gs_opacities = rearrange(opacities, "b v h w ... -> b (v h w) ...")
+
+        # 3) Optional masking to keep only foreground gaussians
+        if masks is not None:
+            if not isinstance(masks, torch.Tensor):
+                # Load masks from paths
+                # If masks is a flat list of strings, assume it's for a single batch (b=1)
+                if len(masks) > 0 and isinstance(masks[0], str):
+                    masks_paths = [masks]  # (1, v)
+                else:
+                    masks_paths = masks  # (b, v)
+
+                processed_masks = []
+                for b_idx in range(b):
+                    b_paths = masks_paths[b_idx] if b_idx < len(masks_paths) else []
+                    b_masks = []
+                    for v_idx in range(v):
+                        if v_idx < len(b_paths):
+                            path = b_paths[v_idx]
+                            with Image.open(path) as img:
+                                if img.mode not in ("L", "1"):
+                                    img = img.convert("L")
+                                if img.size != (W, H):
+                                    img = img.resize((W, H), resample=Image.NEAREST)
+                                b_masks.append(np.array(img) > 0)
+                        else:
+                            # Fallback to all-ones if mask path is missing
+                            b_masks.append(np.ones((H, W), dtype=bool))
+                    processed_masks.append(np.stack(b_masks))
+                masks = torch.from_numpy(np.stack(processed_masks)).to(device=device, dtype=torch.bool)
+
+            masks = masks.to(device=device, dtype=torch.bool)
+            expected_shape = (b, v, H, W)
+            if masks.shape[:4] != expected_shape:
+                raise ValueError(
+                    f"masks must match (b, v, H, W) = {expected_shape}, got {masks.shape[:4]}"
+                )
+
+            mask_flat = rearrange(masks, "b v h w -> b (v h w)")
+            max_keep = int(mask_flat.sum(dim=1).max().item())
+
+            def _select_and_pad(tensor: torch.Tensor, pad_value: torch.Tensor | float):
+                pad_value_tensor = torch.as_tensor(pad_value, device=tensor.device, dtype=tensor.dtype)
+                outs = []
+                for bi in range(b):
+                    keep = mask_flat[bi]
+                    selected = tensor[bi][keep]
+                    pad_len = max_keep - selected.shape[0]
+                    if pad_len > 0:
+                        pad_shape = (pad_len,) + tensor.shape[2:]
+                        pad_block = pad_value_tensor.expand(pad_shape)
+                        selected = torch.cat([selected, pad_block], dim=0)
+                    outs.append(selected)
+                return torch.stack(outs, dim=0)
+
+            gs_means_world = _select_and_pad(gs_means_world, 0.0)
+            gs_scales = _select_and_pad(gs_scales, 0.0)
+            gs_sh_world = _select_and_pad(gs_sh_world, 0.0)
+            gs_opacities = _select_and_pad(gs_opacities, 0.0)
+            # Default to identity quaternion for padded entries to keep them valid if ever accessed.
+            identity_quat = torch.tensor([0.0, 0.0, 0.0, 1.0], device=device, dtype=gs_rotations_world.dtype)
+            gs_rotations_world = _select_and_pad(gs_rotations_world, identity_quat)
 
         return Gaussians(
             means=gs_means_world,

@@ -198,17 +198,6 @@ def export_to_gs_video(
         chunk_size=chunk_size, trj_mode=final_trj_mode, use_sh=True, color_mode=color_mode, enable_tqdm=enable_tqdm
     )
 
-    # 5. Save trajectory video frames
-    os.makedirs(os.path.join(export_dir, "gs_video_frames"), exist_ok=True)
-    for idx in range(color.shape[0]):
-        video_i = color[idx]
-        frames = list(
-            (video_i.clamp(0, 1) * 255).byte().permute(0, 2, 3, 1).cpu().numpy()
-        )  # T x H x W x C, uint8, numpy()
-        for f_idx, frame in enumerate(frames):
-            save_path = os.path.join(export_dir, f"gs_video_frames/{idx:04d}_{f_idx:04d}.png")
-            mpy.ImageClip(frame).save_frame(save_path)
-
-    # 6. Compile and save the final video
+    # 5. Compile and save the final video
     _render_and_save_video_frames(color, depth, export_dir, vis_depth, video_quality, output_name, final_trj_mode)
     return

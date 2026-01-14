@@ -154,6 +154,27 @@ def save_gaussian_ply(
 
     # helper fn, must place after mask
     def trim_select_reshape(element):
+        num_gaussians = element.shape[1]
+        if num_gaussians != src_v * out_h * out_w:
+            # If the number of Gaussians doesn't match the grid size, 
+            # it means they have already been filtered (e.g., by a mask in gs_adapter).
+            # In this case, we skip the grid-based pruning and return the elements as is.
+            # We also filter out any padded Gaussians (opacity <= 0).
+            selected_element = element[0]
+            
+            # Determine valid mask from opacities
+            # Padded opacities were 0.0. If inv_opacity is True, they become -inf.
+            if inv_opacity:
+                valid_mask = ~torch.isinf(gs_opacities[0])
+            else:
+                valid_mask = gs_opacities[0] > 0
+            
+            # Ensure valid_mask is 1D for boolean indexing
+            if valid_mask.dim() > 1:
+                valid_mask = valid_mask.reshape(-1)
+            
+            return selected_element[valid_mask]
+
         selected_element = rearrange(
             element[0], "(v h w) ... -> v h w ...", v=src_v, h=out_h, w=out_w
         )

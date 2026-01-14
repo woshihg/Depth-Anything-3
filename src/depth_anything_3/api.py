@@ -106,6 +106,8 @@ class DepthAnything3(nn.Module, PyTorchModelHubMixin):
         infer_gs: bool = False,
         use_ray_pose: bool = False,
         ref_view_strategy: str = "saddle_balanced",
+        mask_paths: list[str] | None = None,
+        ex_gt: torch.Tensor | None = None,
     ) -> dict[str, torch.Tensor]:
         """
         Forward pass through the model.
@@ -127,7 +129,7 @@ class DepthAnything3(nn.Module, PyTorchModelHubMixin):
         with torch.no_grad():
             with torch.autocast(device_type=image.device.type, dtype=autocast_dtype):
                 return self.model(
-                    image, extrinsics, intrinsics, export_feat_layers, infer_gs, use_ray_pose, ref_view_strategy
+                    image, extrinsics, intrinsics, export_feat_layers, infer_gs, use_ray_pose, ref_view_strategy, mask_paths, ex_gt
                 )
 
     def inference(
@@ -181,6 +183,7 @@ class DepthAnything3(nn.Module, PyTorchModelHubMixin):
             conf_thresh_percentile: [GLB] Lower percentile for adaptive confidence threshold (default: 40.0) # noqa: E501
             num_max_points: [GLB] Maximum number of points in the point cloud (default: 1,000,000)
             show_cameras: [GLB] Show camera wireframes in the exported scene (default: True)
+            mask_dir: [GLB] Optional directory of masks to prune depth before point-cloud export
             feat_vis_fps: [FEAT_VIS] Frame rate for output video (default: 15)
             export_kwargs: additional arguments to export functions.
 
@@ -193,7 +196,9 @@ class DepthAnything3(nn.Module, PyTorchModelHubMixin):
         if "colmap" in export_format:
             assert isinstance(image[0], str), "`image` must be image paths for COLMAP export."
 
+        time_infer_start = time.time()
         # Preprocess images
+        # 这一步骤会根据输入图片的尺寸和实际处理时的分辨率，对相机的内外参进行相应的缩放和调整
         imgs_cpu, extrinsics, intrinsics = self._preprocess_inputs(
             image, extrinsics, intrinsics, process_res, process_res_method
         )
@@ -208,16 +213,18 @@ class DepthAnything3(nn.Module, PyTorchModelHubMixin):
         imgs, ex_t, in_t = self._prepare_model_inputs(imgs_cpu, extrinsics, intrinsics)
 
         # Normalize extrinsics
-        if extrinsics is None:
-            ex_t_norm = self._normalize_extrinsics(ex_t.clone() if ex_t is not None else None)
-        else:
-            ex_t_norm = ex_t
+        # if extrinsics is None:
+        ex_t_norm = self._normalize_extrinsics(ex_t.clone() if ex_t is not None else None)
+        # else:
+        #     ex_t_norm = ex_t
 
         # Run model forward pass
         export_feat_layers = list(export_feat_layers) if export_feat_layers is not None else []
 
+        # 模型接受的外参必须要经过预处理，满足第一张图作为原点的条件，不然输出的外参估计很差
+        # 但是在做对齐的时候，需要的是标准的外参，所以这里多传入了 ex_t_norm
         raw_output = self._run_model_forward(
-            imgs, ex_t_norm, in_t, export_feat_layers, infer_gs, use_ray_pose, ref_view_strategy
+            imgs, ex_t_norm, in_t, export_feat_layers, infer_gs, use_ray_pose, ref_view_strategy, export_kwargs.get("mask_paths", None), ex_gt=ex_t
         )
 
         # Convert raw output to prediction
@@ -230,6 +237,9 @@ class DepthAnything3(nn.Module, PyTorchModelHubMixin):
 
         # Add processed images for visualization
         prediction = self._add_processed_images(prediction, imgs_cpu)
+
+        time_infer_end = time.time()
+        logger.info(f"Inference Total Time: {time_infer_end - time_infer_start} seconds")
 
         # Export if requested
         if export_dir is not None:
@@ -262,6 +272,7 @@ class DepthAnything3(nn.Module, PyTorchModelHubMixin):
                         "conf_thresh_percentile": conf_thresh_percentile,
                         "num_max_points": num_max_points,
                         "show_cameras": show_cameras,
+                        "mask_paths": export_kwargs.get("mask_paths", None),
                     }
                 )
             # Add Feat_vis export parameters
@@ -389,6 +400,8 @@ class DepthAnything3(nn.Module, PyTorchModelHubMixin):
         infer_gs: bool = False,
         use_ray_pose: bool = False,
         ref_view_strategy: str = "saddle_balanced",
+        mask_paths: list[str] | None = None,
+        ex_gt: torch.Tensor | None = None,
     ) -> dict[str, torch.Tensor]:
         """Run model forward pass."""
         device = imgs.device
@@ -397,7 +410,7 @@ class DepthAnything3(nn.Module, PyTorchModelHubMixin):
             torch.cuda.synchronize(device)
         start_time = time.time()
         feat_layers = list(export_feat_layers) if export_feat_layers is not None else None
-        output = self.forward(imgs, ex_t, in_t, feat_layers, infer_gs, use_ray_pose, ref_view_strategy)
+        output = self.forward(imgs, ex_t, in_t, feat_layers, infer_gs, use_ray_pose, ref_view_strategy, mask_paths, ex_gt)
         if need_sync:
             torch.cuda.synchronize(device)
         end_time = time.time()

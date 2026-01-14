@@ -2,9 +2,15 @@ import torch
 import glob
 import os
 from depth_anything_3.api import DepthAnything3
+import time
+# 替换为你的代理地址，注意：
+# 1. 即使是 https 协议，key 也建议全大写
+# 2. 如果是本地代理，通常是 127.0.0.1:端口号
+os.environ["HTTP_PROXY"] = "http://127.0.0.1:7897"
+os.environ["HTTPS_PROXY"] = "http://127.0.0.1:7897"
+from depth_anything_3.utils.colmap_loader import load_colmap_data
 
-
-def generate_3dgs_from_images(image_folder, output_dir, model_name="depth-anything/DA3-GIANT", process_res = 504, colmap_path=None, split=True):
+def generate_3dgs_from_images(image_folder, output_dir, model_name="depth-anything/DA3-GIANT", process_res = 504, colmap_path=None, split=True, mask=False):
     """
     从图像文件夹生成 3D Gaussian Splatting (.glb) 文件。
 
@@ -31,30 +37,41 @@ def generate_3dgs_from_images(image_folder, output_dir, model_name="depth-anythi
     image_test_paths = []
     image_train_paths = []
 
+    if mask:
+        image_mask_folder = os.path.join(image_folder, "masks")
+        mask_paths = []
+        for ext in extensions:
+            mask_paths.extend(glob.glob(os.path.join(image_mask_folder, ext)))
+        if not mask_paths:
+            print(f"No mask images found in {image_mask_folder}")
+            return
+        mask_paths.sort()
+
     if split:
         image_train_folder = os.path.join(image_folder, "images", "train")
         image_test_folder = os.path.join(image_folder, "images", "test")
         for ext in extensions:
             image_test_paths.extend(glob.glob(os.path.join(image_test_folder, ext)))
             image_train_paths.extend(glob.glob(os.path.join(image_train_folder, ext)))
-            if not image_test_paths or not image_train_paths:
-                print(f"No train/test images found in {image_folder}/images/train or {image_folder}/images/test")
-                return
+        if not image_test_paths or not image_train_paths:
+            print(f"No train/test images found in {image_folder}/images/train or {image_folder}/images/test")
+            return
         image_test_paths.sort()
         image_train_paths.sort()
 
-        from depth_anything_3.utils.colmap_loader import load_colmap_data
+
         # 加载训练数据用于生成GS模型
         intrinsics, extrinsics = load_colmap_data(os.path.join(colmap_path), split='train')
 
         # 加载测试数据用于渲染
         test_intrinsics, test_extrinsics = load_colmap_data(os.path.join(colmap_path), split='test')
 
+
         prediction = model.inference(
             image=image_train_paths,
             export_dir=output_dir,
             process_res=process_res,
-            export_format="npz-glb-gs_ply-gs_video",
+            export_format="npz-glb-gs_ply-gs_video-colmap-depth_uint16",
             align_to_input_ext_scale=True,
             infer_gs=True,  # Required for gs_ply and gs_video exports
             render_image=image_test_paths,
@@ -62,20 +79,40 @@ def generate_3dgs_from_images(image_folder, output_dir, model_name="depth-anythi
             intrinsics=intrinsics,
             render_exts=test_extrinsics,
             render_ixts=test_intrinsics,
-            export_kwargs={},
+            export_kwargs={
+                "mask_paths": mask_paths if mask else None,
+            },
         )
     else:
+        image_folder = os.path.join(image_folder, "images")
         for ext in extensions:
             image_paths.extend(glob.glob(os.path.join(image_folder, ext)))
+        if not image_paths:
+            print(f"No train images found in {image_folder}")
+            return
+        image_paths.sort()
+
+        intrinsics, extrinsics = load_colmap_data(os.path.join(colmap_path))
+        prediction = model.inference(
+            image=image_paths,
+            export_dir=output_dir,
+            process_res=process_res,
+            export_format="npz-glb-gs_ply-gs_video-colmap-depth_uint16",
+            align_to_input_ext_scale=True,
+            infer_gs=True,  # Required for gs_ply and gs_video exports
+            extrinsics=extrinsics,
+            intrinsics=intrinsics,
+            export_kwargs={
+                "mask_paths": mask_paths if mask else None,
+            },
+        )
+
 
         if not image_paths:
             print(f"No images found in {image_folder}")
             return
         image_paths.sort()
         print(f"Found {len(image_paths)} images. Starting inference to generate 3DGS...")
-
-
-
 
     print("\nInference complete!")
     print(f"3DGS output has been saved to '{output_dir}'.")
@@ -99,15 +136,26 @@ def generate_3dgs_from_images(image_folder, output_dir, model_name="depth-anythi
 
 
 if __name__ == '__main__':
-    # --- 配置 ---
-    # 假设您在 'assets/examples/SOH' 文件夹中有一系列图像
-    # 您可以将其更改为您自己的图像文件夹路径
-    # git clone https://github.com/woshihg/Depth-Anything-3.git
-    # image_folder_path = "Depth-Anything-3/assets/examples/SOH"
-    data_folder = r"/home/woshihg/PycharmProjects/Depth-Anything-3/data/gsnet"
-    image_folder_path = data_folder  # <--- 在这里更改为您的图像文件夹路径
-    output_folder_path = "output/gsnet_with_trinsics"
-    # output_folder_path = "output/gsnet"
-    process_res = 504
-    colmap_path = data_folder
-    generate_3dgs_from_images(image_folder_path, output_folder_path, process_res = process_res, colmap_path=colmap_path)
+    import argparse
+    parser = argparse.ArgumentParser(description='Generate 3DGS from images.')
+    parser.add_argument('--data_folder', type=str, required=True, help='Path to the scene folder.')
+    parser.add_argument('--output_dir', type=str, required=True, help='Path to save output.')
+    parser.add_argument('--process_res', type=int, default=504, help='Processing resolution.')
+    parser.add_argument('--model_name', type=str, default="depth-anything/DA3-GIANT", help='Model name.')
+    parser.add_argument('--split', action='store_true', help='Use train/test split logic.')
+    parser.add_argument('--mask', action='store_true', help='Use masks.')
+
+    args = parser.parse_args()
+
+    time_start = time.time()
+    generate_3dgs_from_images(
+        image_folder=args.data_folder, 
+        output_dir=args.output_dir, 
+        model_name=args.model_name,
+        process_res=args.process_res, 
+        colmap_path=args.data_folder, 
+        split=args.split, 
+        mask=args.mask
+    )
+    time_end = time.time()
+    print(f"Total time taken: {time_end - time_start} seconds")

@@ -14,9 +14,11 @@
 
 from __future__ import annotations
 
+import glob
 import os
 import numpy as np
 import trimesh
+from PIL import Image
 
 from depth_anything_3.specs import Prediction
 from depth_anything_3.utils.logger import logger
@@ -64,6 +66,7 @@ def export_to_glb(
     show_cameras: bool = True,
     camera_size: float = 0.03,
     export_depth_vis: bool = True,
+    mask_paths: list[str] | None = None,
 ) -> str:
     """Generate a 3D point cloud and camera wireframes and export them as a ``.glb`` file.
 
@@ -131,7 +134,14 @@ def export_to_glb(
         ensure_thresh_percentile,
     )
 
-    # 4) Back-project to world coordinates and get colors (world frame)
+    # 4) Optional mask loading
+    masks = None
+    if mask_paths is not None:
+        H, W = prediction.depth.shape[1:]
+        masks = _load_masks_from_paths(mask_paths, (H, W), expected_n=prediction.depth.shape[0])
+        print(f"Loaded {masks.shape[0]} masks for {prediction.depth.shape[0]} frames.")
+
+    # 5) Back-project to world coordinates and get colors (world frame)
     points, colors = _depths_to_world_points_with_colors(
         prediction.depth,
         prediction.intrinsics,
@@ -139,9 +149,10 @@ def export_to_glb(
         images_u8,
         prediction.conf,
         conf_thr,
+        masks,
     )
 
-    # 5) Based on first camera orientation + glTF axis system, center by point cloud,
+    # 6) Based on first camera orientation + glTF axis system, center by point cloud,
     # construct alignment transform, and apply to point cloud
     A = _compute_alignment_transform_first_cam_glTF_center_by_points(
         prediction.extrinsics[0], points
@@ -150,10 +161,10 @@ def export_to_glb(
     if points.shape[0] > 0:
         points = trimesh.transform_points(points, A)
 
-    # 6) Clean + downsample
+    # 7) Clean + downsample
     points, colors = _filter_and_downsample(points, colors, num_max_points)
 
-    # 7) Assemble scene (add point cloud first)
+    # 8) Assemble scene (add point cloud first)
     scene = trimesh.Scene()
     if scene.metadata is None:
         scene.metadata = {}
@@ -163,7 +174,7 @@ def export_to_glb(
         pc = trimesh.points.PointCloud(vertices=points, colors=colors)
         scene.add_geometry(pc)
 
-    # 8) Draw cameras (wireframe pyramids), using the same transform A
+    # 9) Draw cameras (wireframe pyramids), using the same transform A
     if show_cameras and prediction.intrinsics is not None and prediction.extrinsics is not None:
         scene_scale = _estimate_scene_scale(points, fallback=1.0)
         H, W = prediction.depth.shape[1:]
@@ -184,7 +195,7 @@ def export_to_glb(
             image_sizes=[(H, W)] * render_extrinsics.shape[0],
             scale=scene_scale * camera_size,
         )
-    # 9) Export
+    # 10) Export
     os.makedirs(export_dir, exist_ok=True)
     out_path = os.path.join(export_dir, "scene.glb")
     scene.export(out_path)
@@ -220,6 +231,7 @@ def _depths_to_world_points_with_colors(
     images_u8: np.ndarray,
     conf: np.ndarray | None,
     conf_thr: float,
+    masks: np.ndarray | None = None,
 ) -> tuple[np.ndarray, np.ndarray]:
     """
     For each frame, transform (u,v,1) through K^{-1} to get rays,
@@ -236,6 +248,8 @@ def _depths_to_world_points_with_colors(
     for i in range(N):
         d = depth[i]  # (H,W)
         valid = np.isfinite(d) & (d > 0)
+        if masks is not None and i < masks.shape[0]:
+            valid &= masks[i]
         if conf is not None:
             valid &= conf[i] >= conf_thr
         if not np.any(valid):
@@ -261,6 +275,46 @@ def _depths_to_world_points_with_colors(
         return np.zeros((0, 3), dtype=np.float32), np.zeros((0, 3), dtype=np.uint8)
 
     return np.concatenate(pts_all, 0), np.concatenate(col_all, 0)
+
+
+def _load_masks_from_paths(mask_paths: list[str], target_hw: tuple[int, int], expected_n: int) -> np.ndarray:
+    """Load binary masks from provided paths, resize to target (H,W), and return a boolean stack.
+
+    If fewer masks are provided than frames, missing masks are treated as all-ones.
+    Extra masks beyond `expected_n` are ignored.
+    """
+    H, W = target_hw
+    masks: list[np.ndarray] = []
+
+    if len(mask_paths) < expected_n:
+        logger.warning(
+            "mask_paths count (%d) < frames (%d); missing masks treated as all-ones.",
+            len(mask_paths), expected_n,
+        )
+    elif len(mask_paths) > expected_n:
+        logger.warning(
+            "mask_paths count (%d) > frames (%d); extra masks will be ignored.",
+            len(mask_paths), expected_n,
+        )
+
+    for i in range(expected_n):
+        if i >= len(mask_paths):
+            masks.append(np.ones((H, W), dtype=bool))
+            continue
+        path = mask_paths[i]
+        try:
+            with Image.open(path) as img:
+                if img.mode not in ("L", "1"):
+                    img = img.convert("L")
+                if img.size != (W, H):
+                    img = img.resize((W, H), resample=Image.NEAREST)
+                arr = np.array(img)
+                masks.append(arr > 0)
+        except Exception as exc:
+            logger.warning(f"Failed to load mask: {path}. Using all-ones. Error: {exc}")
+            masks.append(np.ones((H, W), dtype=bool))
+
+    return np.stack(masks, axis=0)
 
 
 def _filter_and_downsample(points: np.ndarray, colors: np.ndarray, num_max: int):

@@ -68,6 +68,7 @@ class ModelInference:
         show_camera: bool = True,
         save_percentage: float = 30.0,
         num_max_points: int = 1_000_000,
+        mask_dir: str | None = None,
         infer_gs: bool = False,
         ref_view_strategy: str = "saddle_balanced",
         gs_trj_mode: str = "extend",
@@ -84,6 +85,7 @@ class ModelInference:
             show_camera: Whether to show camera in 3D view
             save_percentage: Percentage of points to save (0-100)
             num_max_points: Maximum number of points in point cloud
+            mask_dir: Optional directory of masks to prune depth before GLB export
             infer_gs: Whether to infer 3D Gaussian Splatting
             ref_view_strategy: Reference view selection strategy
             gs_trj_mode: Trajectory mode for 3DGS
@@ -147,6 +149,7 @@ class ModelInference:
             show_cameras=show_camera,
             conf_thresh_percentile=save_percentage,
             num_max_points=int(num_max_points),
+            mask_dir=mask_dir,
         )
 
         # export to gs video if needed

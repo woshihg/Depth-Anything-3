@@ -29,6 +29,7 @@ class Gaussians:
     rotations: torch.Tensor  # world_quat_wxyz, "batch gaussian 4"
     harmonics: torch.Tensor  # world SH, "batch gaussian 3 d_sh"
     opacities: torch.Tensor  # opacity | opacity SH, "batch gaussian" | "batch gaussian 1 d_sh"
+    features: Optional[torch.Tensor] = None  # b n_gaussian d_feature
 
 
 @dataclass

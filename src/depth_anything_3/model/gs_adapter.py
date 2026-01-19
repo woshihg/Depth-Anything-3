@@ -168,6 +168,7 @@ class GaussianAdapter(nn.Module):
         gs_opacities = rearrange(opacities, "b v h w ... -> b (v h w) ...")
 
         # 3) Optional masking to keep only foreground gaussians
+        gs_features = None
         if masks is not None:
             if not isinstance(masks, torch.Tensor):
                 # Load masks from paths
@@ -185,48 +186,23 @@ class GaussianAdapter(nn.Module):
                         if v_idx < len(b_paths):
                             path = b_paths[v_idx]
                             with Image.open(path) as img:
-                                if img.mode not in ("L", "1"):
+                                if img.mode not in ("L", "1", "I"):
                                     img = img.convert("L")
                                 if img.size != (W, H):
                                     img = img.resize((W, H), resample=Image.NEAREST)
-                                b_masks.append(np.array(img) > 0)
+                                b_masks.append(np.array(img))
                         else:
                             # Fallback to all-ones if mask path is missing
-                            b_masks.append(np.ones((H, W), dtype=bool))
+                            b_masks.append(np.ones((H, W), dtype=np.uint8))
                     processed_masks.append(np.stack(b_masks))
-                masks = torch.from_numpy(np.stack(processed_masks)).to(device=device, dtype=torch.bool)
+                masks = torch.from_numpy(np.stack(processed_masks)).to(device=device)
 
-            masks = masks.to(device=device, dtype=torch.bool)
-            expected_shape = (b, v, H, W)
-            if masks.shape[:4] != expected_shape:
-                raise ValueError(
-                    f"masks must match (b, v, H, W) = {expected_shape}, got {masks.shape[:4]}"
-                )
-
-            mask_flat = rearrange(masks, "b v h w -> b (v h w)")
-            max_keep = int(mask_flat.sum(dim=1).max().item())
-
-            def _select_and_pad(tensor: torch.Tensor, pad_value: torch.Tensor | float):
-                pad_value_tensor = torch.as_tensor(pad_value, device=tensor.device, dtype=tensor.dtype)
-                outs = []
-                for bi in range(b):
-                    keep = mask_flat[bi]
-                    selected = tensor[bi][keep]
-                    pad_len = max_keep - selected.shape[0]
-                    if pad_len > 0:
-                        pad_shape = (pad_len,) + tensor.shape[2:]
-                        pad_block = pad_value_tensor.expand(pad_shape)
-                        selected = torch.cat([selected, pad_block], dim=0)
-                    outs.append(selected)
-                return torch.stack(outs, dim=0)
-
-            gs_means_world = _select_and_pad(gs_means_world, 0.0)
-            gs_scales = _select_and_pad(gs_scales, 0.0)
-            gs_sh_world = _select_and_pad(gs_sh_world, 0.0)
-            gs_opacities = _select_and_pad(gs_opacities, 0.0)
-            # Default to identity quaternion for padded entries to keep them valid if ever accessed.
-            identity_quat = torch.tensor([0.0, 0.0, 0.0, 1.0], device=device, dtype=gs_rotations_world.dtype)
-            gs_rotations_world = _select_and_pad(gs_rotations_world, identity_quat)
+            # Extract category IDs before converting to bool mask for filtering
+            category_ids = masks.to(torch.long)
+            # Create one-hot encoding for 16 categories
+            # shape: (b, v, h, w, 16)
+            gs_features = torch.nn.functional.one_hot(category_ids % 16, num_classes=16).to(dtype)
+            gs_features = rearrange(gs_features, "b v h w d -> b (v h w) d")
 
         return Gaussians(
             means=gs_means_world,
@@ -234,6 +210,7 @@ class GaussianAdapter(nn.Module):
             opacities=gs_opacities,
             scales=gs_scales,
             rotations=gs_rotations_world,
+            features=gs_features,
         )
 
     def get_scale_multiplier(

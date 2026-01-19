@@ -26,7 +26,8 @@ def process_all(root_dir, output_root_base, python_exe):
             python_exe, "gausian.py",
             "--data_folder", data_folder,
             "--output_dir", output_dir,
-            "--process_res", "504"
+            "--process_res", "504",
+            "--mask", 
             # 如果需要 split 或 mask，可以在此添加 --split 或 --mask
         ]
         
@@ -41,8 +42,8 @@ def process_all(root_dir, output_root_base, python_exe):
 
 if __name__ == "__main__":
     # 配置
-    TARGET_DATASET_ROOT = "/home/woshihg/360_v2_split"
-    OUTPUT_ROOT_BASE = "output/360_v2_split"
+    TARGET_DATASET_ROOT = "/home/woshihg/graspnet_split"
+    OUTPUT_ROOT_BASE = "output/graspnet_split_mask"
     PYTHON_EXECUTABLE = "/home/woshihg/miniconda3/envs/da3/bin/python"
     
     process_all(TARGET_DATASET_ROOT, OUTPUT_ROOT_BASE, PYTHON_EXECUTABLE)

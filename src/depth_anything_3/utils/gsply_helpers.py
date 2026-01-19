@@ -22,7 +22,7 @@ from torch import Tensor
 from depth_anything_3.specs import Gaussians
 
 
-def construct_list_of_attributes(num_rest: int) -> list[str]:
+def construct_list_of_attributes(num_rest: int, num_features: int = 0) -> list[str]:
     attributes = ["x", "y", "z", "nx", "ny", "nz"]
     for i in range(3):
         attributes.append(f"f_dc_{i}")
@@ -33,6 +33,8 @@ def construct_list_of_attributes(num_rest: int) -> list[str]:
         attributes.append(f"scale_{i}")
     for i in range(4):
         attributes.append(f"rot_{i}")
+    for i in range(num_features):
+        attributes.append(f"feature_{i}")
     return attributes
 
 
@@ -43,6 +45,7 @@ def export_ply(
     harmonics: Tensor,  # "gaussian 3 d_sh"
     opacities: Tensor,  # "gaussian"
     path: Path,
+    features: Optional[Tensor] = None,  # "gaussian d_feature"
     shift_and_scale: bool = False,
     save_sh_dc_only: bool = True,
     match_3dgs_mcmc_dev: Optional[bool] = False,
@@ -63,6 +66,8 @@ def export_ply(
     f_dc = harmonics[..., 0]
     f_rest = harmonics[..., 1:].flatten(start_dim=1)
 
+    num_features = features.shape[1] if features is not None else 0
+
     if match_3dgs_mcmc_dev:
         sh_degree = 3
         n_rest = 3 * (sh_degree + 1) ** 2 - 3
@@ -71,14 +76,15 @@ def export_ply(
         ).flatten(start_dim=1)
         dtype_full = [
             (attribute, "f4")
-            for attribute in construct_list_of_attributes(num_rest=n_rest)
+            for attribute in construct_list_of_attributes(num_rest=n_rest, num_features=num_features)
             if attribute not in ("nx", "ny", "nz")
         ]
     else:
         dtype_full = [
             (attribute, "f4")
             for attribute in construct_list_of_attributes(
-                0 if save_sh_dc_only else f_rest.shape[1]
+                0 if save_sh_dc_only else f_rest.shape[1],
+                num_features=num_features
             )
         ]
     elements = np.empty(means.shape[0], dtype=dtype_full)
@@ -95,6 +101,9 @@ def export_ply(
         attributes.pop(1)  # dummy normal is not needed
     elif save_sh_dc_only:
         attributes.pop(3)  # remove f_rest from attributes
+
+    if features is not None:
+        attributes.append(features.detach().cpu().numpy())
 
     attributes = np.concatenate(attributes, axis=1)
     elements[:] = list(map(tuple, attributes))
@@ -128,6 +137,7 @@ def save_gaussian_ply(
     world_rotations = gaussians.rotations
     gs_scales = gaussians.scales
     gs_opacities = inverse_sigmoid(gaussians.opacities) if inv_opacity else gaussians.opacities
+    gs_features = gaussians.features
 
     # Create a mask to filter the Gaussians.
 
@@ -187,6 +197,7 @@ def save_gaussian_ply(
         rotations=trim_select_reshape(world_rotations),
         harmonics=trim_select_reshape(world_shs),
         opacities=trim_select_reshape(gs_opacities),
+        features=trim_select_reshape(gs_features) if gs_features is not None else None,
         path=Path(save_path),
         shift_and_scale=shift_and_scale,
         save_sh_dc_only=save_sh_dc_only,

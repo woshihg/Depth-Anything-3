@@ -22,6 +22,7 @@ from depth_anything_3.specs import Prediction
 def export_to_depth_uint16(
     prediction: Prediction,
     export_dir: str,
+    image_paths: list[str] = None,
 ):
     """
     Export depth maps as 16-bit uint16 PNG files.
@@ -34,5 +35,12 @@ def export_to_depth_uint16(
     for idx in range(prediction.depth.shape[0]):
         depth = prediction.depth[idx]
         depth_uint16 = (depth * 1000.0).clip(0, 65535).astype(np.uint16)
-        save_path = os.path.join(output_folder, f"{idx:04d}.png")
+        
+        if image_paths is not None and idx < len(image_paths):
+            image_name = os.path.basename(image_paths[idx])
+            image_name = os.path.splitext(image_name)[0]
+            save_path = os.path.join(output_folder, f"{image_name}.png")
+        else:
+            save_path = os.path.join(output_folder, f"{idx:04d}.png")
+            
         cv2.imwrite(save_path, depth_uint16)
